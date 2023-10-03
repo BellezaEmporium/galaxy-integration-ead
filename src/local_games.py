@@ -183,9 +183,10 @@ def get_local_games_from_manifests():
             if disk.Caption == "C:":
                 volume_serial_number = disk.VolumeSerialNumber
         for video in sheesh.Win32_VideoController():
-            # get the processor video controller, not the gpu one
+            video_controller_pnp_device_id = video.PNPDeviceID
+            # get the processor video controller, not the gpu one (if one exists)
             if video.VideoProcessor.startswith("Intel") or video.VideoProcessor.startswith("AMD"):
-                video_controller_pnp_device_id = video.PNPDeviceID
+                break
         for processor in sheesh.Win32_Processor():
             processor_manufacturer = processor.Manufacturer
             processor_id = processor.ProcessorId
