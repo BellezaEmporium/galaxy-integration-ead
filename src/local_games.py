@@ -6,7 +6,6 @@ import logging
 import os
 import platform
 import subprocess
-from typing import Optional, Set, List
 from cryptography.hazmat.primitives.ciphers import algorithms, modes
 from cryptography.hazmat.primitives.ciphers.base import Cipher
 
