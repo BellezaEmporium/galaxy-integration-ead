@@ -4,13 +4,12 @@ import re
 import functools
 import logging
 import os
+import time
 import platform
 import subprocess
-from cryptography.hazmat.primitives.ciphers import algorithms, modes
-from cryptography.hazmat.primitives.ciphers.base import Cipher
+import tempfile
 
 if platform.system() == "Windows":
-    from wmi import WMI
     from ctypes import byref, sizeof, windll, create_unicode_buffer, FormatError, WinError
     from ctypes.wintypes import DWORD
     from typing import Optional, Set, List
@@ -154,13 +153,6 @@ def get_local_games_from_manifests():
     iv = "allUsersGenericIdIS".encode('ascii')
     iv_hash = sha3_256(iv).digest()
 
-    if platform.system() == "Windows":
-        data_path = os.path.join(os.environ.get("ProgramData", os.environ.get("SystemDrive", "C:") + R"\ProgramData"), "EA Desktop", "530c11479fe252fc5aabc24935b9776d4900eb3ba58fdc271e0d6229413ad40e")
-    elif platform.system() == "Darwin":
-        data_path = os.path.join(os.sep, "Library", "Application Support", "EA Desktop", "530c11479fe252fc5aabc24935b9776d4900eb3ba58fdc271e0d6229413ad40e")
-    else:
-        data_path = "."
-    
     running_processes = [exe for pid, exe in process_iter() if exe is not None]
 
     def is_game_running(game_folder_name):
@@ -169,172 +161,25 @@ def get_local_games_from_manifests():
                 return True
         return False
     
+    is_file = os.path.join(tempfile.gettempdir(), "is.json")
+
     if platform.system() == "Windows":
-        # Retrieve system information
-        sheesh = WMI()
-
-        for baseboard in sheesh.Win32_BaseBoard():
-            baseboard_manufacturer = baseboard.Manufacturer
-            baseboard_serial_number = baseboard.SerialNumber
-        for bios in sheesh.Win32_BIOS():
-            bios_manufacturer = bios.Manufacturer
-            bios_serial_number = bios.SerialNumber
-        for disk in sheesh.Win32_LogicalDisk():
-            if disk.Caption == "C:":
-                volume_serial_number = disk.VolumeSerialNumber
-        for video in sheesh.Win32_VideoController():
-            video_controller_pnp_device_id = video.PNPDeviceID
-            # get the processor video controller, not the gpu one (if one exists)
-            if video.VideoProcessor.startswith("Intel") or video.VideoProcessor.startswith("AMD"):
-                break
-        for processor in sheesh.Win32_Processor():
-            processor_manufacturer = processor.Manufacturer
-            processor_id = processor.ProcessorId
-            processor_name = processor.Name
-
-    elif platform.system() == "Darwin":
-        # Retrieve system information
-        baseboard_manufacturer = ''
-        baseboard_serial_number = ''
-        bios_manufacturer = ''
-        bios_serial_number = ''
-        volume_serial_number = ''
-        processor_manufacturer = ''
-        processor_id = ''
-        processor_name = ''
-
-        # Baseboard information
-        baseboard_manufacturer = subprocess.check_output(["system_profiler", "SPHardwareDataType"])
-        baseboard_manufacturer = baseboard_manufacturer.decode('utf-8').split(':')[-1].strip()
-
-        # BIOS information (Mac doesn't have BIOS in the traditional sense)
-        bios_manufacturer = "Apple"
-        bios_serial_number = subprocess.check_output(["system_profiler", "SPHardwareDataType"])
-        bios_serial_number = bios_serial_number.decode('utf-8').split(':')[-1].strip()
-
-        # Disk information
-        volume_serial_number = subprocess.check_output(["system_profiler", "SPStorageDataType"])
-        volume_serial_number = volume_serial_number.decode('utf-8').split('Serial Number (system):')[-1].strip()
-
-        # Video controller information
-        # to be determined
-
-        # Processor information
-        processor_info = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"])
-        processor_info = processor_info.decode('utf-8').strip()
-
-        processor_manufacturer = "Intel"  # Assuming Mac uses Intel processors
-        processor_name = processor_info
-
+        is_decrypt_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "is_decryption_galaxy.py")
+        if os.path.exists(is_decrypt_path):
+            subprocess.check_output("Powershell -Command \"Start-Process python.exe -ArgumentList \'" + is_decrypt_path + "\' -Verb RunAs\"", shell=True)
+            time.sleep(10)
     
-    elif platform.system() == "Linux":
-        # Retrieve system information
-        baseboard_manufacturer = ''
-        baseboard_serial_number = ''
-        bios_manufacturer = ''
-        bios_serial_number = ''
-        volume_serial_number = ''
-        video_controller_pnp_device_id = ''
-        processor_manufacturer = ''
-        processor_id = ''
-        processor_name = ''
-
-        # Baseboard information
-        with open('/sys/class/dmi/id/board_vendor', 'r') as f:
-            baseboard_manufacturer = f.read().strip()
-
-        with open('/sys/class/dmi/id/board_serial', 'r') as f:
-            baseboard_serial_number = f.read().strip()
-
-        # BIOS information
-        with open('/sys/class/dmi/id/bios_vendor', 'r') as f:
-            bios_manufacturer = f.read().strip()
-
-        with open('/sys/class/dmi/id/bios_version', 'r') as f:
-            bios_serial_number = f.read().strip()
-
-        # Disk information (assuming the root partition is mounted at /)
-        partition = psutil.disk_partitions(all=False)[0]
-        volume_serial_number = psutil.disk_usage(partition.mountpoint).serial
-
-        # Video controller information (you may need to adjust this)
-        for device in psutil.pids():
-            try:
-                cmdline = psutil.Process(device).cmdline()
-                if "Xorg" in cmdline or "xorg" in cmdline:
-                    # Extract video controller information from Xorg process
-                    # TEST THIS
-                    video_controller_pnp_device_id = cmdline[cmdline.index("Xorg") + 1]
-                    pass
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-
-        # Processor information
-        processor_info = os.popen("lscpu").read()
-        lines = processor_info.split('\n')
-        for line in lines:
-            if "Vendor ID:" in line:
-                processor_manufacturer = line.split(':')[1].strip()
-            elif "Model name:" in line:
-                processor_name = line.split(':')[1].strip()
-
-    # sha1 string
-    hw_info = baseboard_manufacturer + ";" + baseboard_serial_number + ";" + bios_manufacturer + ";" + bios_serial_number + ";" + volume_serial_number + ";" + video_controller_pnp_device_id + ";" + processor_manufacturer + ";" + processor_id + ";" + processor_name + ';'
-    # Calculate SHA1 Hash of hardware string
-    hw_info_bytes = hw_info.encode('ascii')
-    hw_hash = sha1(hw_info_bytes).digest()
-    hash_str = 'allUsersGenericIdIS' + hw_hash.hex().lower()
-
-    print("Got hardware info: %s", hw_info)
-
-    # Calculate SHA3 256 Hash of full string
-    hash_bytes = hash_str.encode('ascii')
-    key_hash = sha3_256(hash_bytes).digest()
-
-    print("Got key hash: %s", key_hash.hex())
-
-    cipher = Cipher(algorithms.AES(key_hash), modes.CBC(iv_hash[0:16]))
-
-    # Create a decryptor object
-    decryptor = cipher.decryptor()
-
-    # Open input and output files
-    with open(data_path, 'rb') as infile, open("IS.json", 'wb') as outfile:
-        # Read the first 64 bytes and discard them
-        infile.read(64)
-        block_size = 16
-
-        while True:
-            # Read a block from the input file
-            block = infile.read(block_size)
-            if not block:
-                break  # Reached end of file
-
-            # Decrypt the block and write to the output file
-            decrypted_block = decryptor.update(block)
-            outfile.write(decrypted_block)
-
-    # verifying the JSON part
-    # seems like there's undescribed characters () in the end of the json file
-    # so we need to remove them
-
-    with open("IS.json", "r+") as f:
-        # remove  from the end of the file
-        json_string = f.read().replace("", "")
-        f.write(json_string)
-
-    print("IS decrypted successfully.")
-    
-    installed_games = [json.loads(line) for line in open(data_path + "/is.json", 'r', encoding='utf-8')]
-    logger.info(f"Opening manifest file ", data_path + "/is.json ...")
-    for game in installed_games[0]['installInfos']:
-            logger.info(f"Found installed game: ", game['softwareId'])
-            if game['executablePath'] != "":
-                local_games.append(LocalGame(game['softwareId'], LocalGameState.Installed))
-            else:
-                local_games.append(LocalGame(game['softwareId'], LocalGameState.None_))
+    if os.path.exists(is_file):
+        installed_games = [json.loads(line) for line in open(is_file, 'r', encoding='utf-8')]
+        logger.info(f"Opening manifest file ", is_file + " ...")
+        for game in installed_games[0]['installInfos']:
+                logger.info(f"Found installed game: ", game['softwareId'])
+                if game['executablePath'] != "":
+                    local_games.append(LocalGame(game['softwareId'], LocalGameState.Installed))
+                else:
+                    local_games.append(LocalGame(game['softwareId'], LocalGameState.None_))
     else:
-        logger.warning("is.json file not found. Local games won't be checked. We strongly suggest to use the is_decryption_galaxy.py file to generate the decrypted IS file.")
+        logger.warning("%TEMP%\is.json file not found. Local games won't be checked. We strongly suggest to use the is_decryption_galaxy.py file to generate the decrypted IS file.")
 
 
     for local_game in local_games:
