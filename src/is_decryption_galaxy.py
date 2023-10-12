@@ -6,7 +6,7 @@ import tempfile
 if platform.system() == "Darwin":
     import psutil
 from hashlib import sha1, sha3_256
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import aes
 
 # changes in overall functioning (as of its release) constraints us to use a decryption method in order to check which game's installed
 # inputs the encrypted manifest file
@@ -81,13 +81,13 @@ if platform.system() == "Windows":
     
     # sha1 string
     hw_info = baseboard_manufacturer + ";" + baseboard_serial_number + ";" + bios_manufacturer + ";" + bios_serial_number + ";" + volume_serial_number + ";" + video_controller_pnp_device_id + ";" + processor_manufacturer + ";" + processor_id + ";" + processor_name + ";"
-    print("Got hardware info: %s", hw_info)
+    print("Got hardware info: " + hw_info)
 
     # Calculate SHA1 Hash of hardware string
     hw_info_bytes = hw_info.encode('ascii')
     hw_hash = sha1(hw_info_bytes).digest()
 
-    print("Got hardware hash: %s", hw_hash.hex())
+    print("Got hardware hash: " + hw_hash.hex())
 
     hash_str = 'allUsersGenericIdIS' + hw_hash.hex().lower()
 
@@ -95,13 +95,10 @@ if platform.system() == "Windows":
     hash_bytes = hash_str.encode('ascii')
     key_hash = sha3_256(hash_bytes).digest()
 
-    print("Got key hash: %s", key_hash.hex())
+    print("Got key hash: " + key_hash.hex())
 
-    cipher = Cipher(algorithms.AES(key_hash), modes.CBC(iv_hash[0:16]))
-
-    # Create a decryptor object
-    decryptor = cipher.decryptor()
-
+    aes = aes.AESModeOfOperationCBC(key_hash, iv = iv_hash[0:16])
+    
     # Open input and output files
     with open(file_path, 'rb') as infile, open(os.path.join(tempfile.gettempdir(), "is.json"), 'wb') as outfile:
         # Read the first 64 bytes and discard them
@@ -115,17 +112,17 @@ if platform.system() == "Windows":
                 break  # Reached end of file
 
             # Decrypt the block and write to the output file
-            decrypted_block = decryptor.update(block)
+            decrypted_block = aes.decrypt(block)
             outfile.write(decrypted_block)
 
     # verifying the JSON part
     # seems like there's undescribed characters ( or ) in the end of the json file
     # so we need to remove them
 
-    with open(os.path.join(tempfile.gettempdir(), "is.json"), "r+") as f:
-        # remove  or  from the end of the file
-        json_string = f.read().replace("", "")
-        json_string = json_string.replace("", "")
+    json_string = ""
+    with open(os.path.join(tempfile.gettempdir(), "is.json"), "r") as f:
+        json_string = f.read().replace("", "").replace("", "")
+    with open(os.path.join(tempfile.gettempdir(), "is.json"), "w") as f:
         f.write(json_string)
 
     print("IS decrypted successfully.")
@@ -155,7 +152,7 @@ elif platform.system() == "Darwin":
     volume_serial_number = volume_serial_number.decode('utf-8').split('Serial Number (system):')[-1].strip()
 
     # Video controller information
-    # to be determined
+    video_controller_pnp_device_id = ''  # to be determined
 
     # Processor information
     processor_info = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"])
@@ -172,19 +169,16 @@ elif platform.system() == "Darwin":
     hw_hash = sha1(hw_info_bytes).digest()
     hash_str = 'allUsersGenericIdIS' + hw_hash.hex().lower()
 
-    print("Got hardware info: %s", hw_info)
+    print("Got hardware info: " + hw_info)
 
     # Calculate SHA3 256 Hash of full string
     hash_bytes = hash_str.encode('ascii')
     key_hash = sha3_256(hash_bytes).digest()
 
-    print("Got key hash: %s", key_hash.hex())
+    print("Got key hash: " + key_hash.hex())
 
-    cipher = Cipher(algorithms.AES(key_hash), modes.CBC(iv_hash[0:16]))
-
-    # Create a decryptor object
-    decryptor = cipher.decryptor()
-
+    aes = aes.AESModeOfOperationCBC(key_hash, iv = iv_hash[0:16])
+    
     # Open input and output files
     with open(file_path, 'rb') as infile, open(os.path.join(tempfile.gettempdir(), "is.json"), 'wb') as outfile:
         # Read the first 64 bytes and discard them
@@ -198,16 +192,17 @@ elif platform.system() == "Darwin":
                 break  # Reached end of file
 
             # Decrypt the block and write to the output file
-            decrypted_block = decryptor.update(block)
+            decrypted_block = aes.decrypt(block)
             outfile.write(decrypted_block)
 
     # verifying the JSON part
     # seems like there's undescribed characters ( or ) in the end of the json file
     # so we need to remove them
 
-    with open(os.path.join(tempfile.gettempdir(), "is.json"), "r+") as f:
-        # remove  or  from the end of the file
+    json_string = ""
+    with open(os.path.join(tempfile.gettempdir(), "is.json"), "r") as f:
         json_string = f.read().replace("", "").replace("", "")
+    with open(os.path.join(tempfile.gettempdir(), "is.json"), "w") as f:
         f.write(json_string)
 
     print("IS decrypted successfully.")
@@ -270,19 +265,16 @@ elif platform.system() == "Linux":
     hw_hash = sha1(hw_info_bytes).digest()
     hash_str = 'allUsersGenericIdIS' + hw_hash.hex().lower()
 
-    print("Got hardware info: %s", hw_info)
+    print("Got hardware info: " + hw_info)
 
     # Calculate SHA3 256 Hash of full string
     hash_bytes = hash_str.encode('ascii')
     key_hash = sha3_256(hash_bytes).digest()
 
-    print("Got key hash: %s", key_hash.hex())
+    print("Got key hash: " + key_hash.hex())
 
-    cipher = Cipher(algorithms.AES(key_hash), modes.CBC(iv_hash[0:16]))
-
-    # Create a decryptor object
-    decryptor = cipher.decryptor()
-
+    aes = aes.AESModeOfOperationCBC(key_hash, iv = iv_hash[0:16])
+    
     # Open input and output files
     with open(file_path, 'rb') as infile, open(os.path.join(tempfile.gettempdir(), "is.json"), 'wb') as outfile:
         # Read the first 64 bytes and discard them
@@ -296,16 +288,17 @@ elif platform.system() == "Linux":
                 break  # Reached end of file
 
             # Decrypt the block and write to the output file
-            decrypted_block = decryptor.update(block)
+            decrypted_block = aes.decrypt(block)
             outfile.write(decrypted_block)
 
     # verifying the JSON part
     # seems like there's undescribed characters ( or ) in the end of the json file
     # so we need to remove them
 
-    with open(os.path.join(tempfile.gettempdir(), "is.json"), "r+") as f:
-        # remove  or  from the end of the file
+    json_string = ""
+    with open(os.path.join(tempfile.gettempdir(), "is.json"), "r") as f:
         json_string = f.read().replace("", "").replace("", "")
+    with open(os.path.join(tempfile.gettempdir(), "is.json"), "w") as f:
         f.write(json_string)
 
     print("IS decrypted successfully.")
