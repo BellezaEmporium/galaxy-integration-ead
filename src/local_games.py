@@ -8,6 +8,7 @@ import time
 import platform
 import subprocess
 import tempfile
+import winreg
 
 if platform.system() == "Windows":
     from ctypes import byref, sizeof, windll, create_unicode_buffer, FormatError, WinError
@@ -165,8 +166,11 @@ def get_local_games_from_manifests():
 
     if platform.system() == "Windows":
         is_decrypt_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "is_decryption_galaxy.py")
+        python_path = os.path.join(get_python_path(), "python.exe")
+        if not os.path.exists(python_path):
+            python_path = "python.exe"
         if os.path.exists(is_decrypt_path):
-            subprocess.check_output("Powershell -Command \"Start-Process python.exe -ArgumentList \'" + is_decrypt_path + "\' -Verb RunAs\"", shell=True)
+            subprocess.check_output("Powershell -Command \"Start-Process \'" + python_path + "\' -ArgumentList \'" + is_decrypt_path + "\' -Verb RunAs\"", shell=True)
             time.sleep(10)
     
     if os.path.exists(is_file):
@@ -203,6 +207,27 @@ def get_state_changes(old_list, new_list):
         if new_dict[game_id] != old_dict[game_id]
     )
     return result
+
+
+def get_python_path():
+    platform_id = platform.system()
+    python_path = ""
+    if platform_id == "Windows":
+        reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
+
+        keyname = winreg.OpenKey(reg, r'SOFTWARE\WOW6432Node\GOG.com\GalaxyClient\paths')
+        for i in range(1024):
+            try:
+                valname = winreg.EnumKey(keyname, i)
+                open_key = winreg.OpenKey(keyname, valname)
+                python_path = winreg.QueryValueEx(open_key, "client")
+            except EnvironmentError:
+                break
+    else:
+        python_path = ""  # fallback for testing on another platform
+        # raise NotImplementedError("Not implemented on {}".format(platform_id))
+
+    return python_path
 
 
 def get_local_content_path():
