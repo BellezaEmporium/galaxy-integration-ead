@@ -1,5 +1,4 @@
 import asyncio
-import os
 import pathlib
 import json
 import logging
@@ -35,7 +34,7 @@ def is_windows():
     return platform.system().lower() == "windows"
 
 
-LOCAL_GAMES_CACHE_VALID_PERIOD = 20
+LOCAL_GAMES_CACHE_VALID_PERIOD = 5
 AUTH_PARAMS = {
     "window_title": "Login to EA Desktop",
     "window_width": 495 if is_windows() else 480,
@@ -76,10 +75,6 @@ class OriginPlugin(Plugin):
         self._user_id = None
         self._persona_id = None
 
-        self._local_games = LocalGames()
-        self._local_games_last_update = 0
-        self._local_games_update_in_progress = False
-
         def auth_lost():
             self.lost_authentication()
 
@@ -88,6 +83,10 @@ class OriginPlugin(Plugin):
         self._http_client.set_cookies_updated_callback(self._update_stored_cookies)
         self._backend_client = OriginBackendClient(self._http_client)
         self._persistent_cache_updated = False
+
+        self._local_games = LocalGames()
+        self._local_games_last_update = 0
+        self._local_games_update_in_progress = False
 
     @property
     def _game_time_cache(self) -> Dict[OfferId, GameTime]:
@@ -295,22 +294,22 @@ class OriginPlugin(Plugin):
             logger.debug("LocalGames.update in progress, skipping cache update")
             return
 
-        if time.time() - self._local_games_last_update < time.time() - LOCAL_GAMES_CACHE_VALID_PERIOD:
+        if time.time() - self._local_games_last_update < LOCAL_GAMES_CACHE_VALID_PERIOD:
             logger.debug("Local games cache is fresh enough")
             return
 
         loop = asyncio.get_running_loop()
         asyncio.create_task(notify_local_games_changed())
 
-    async def get_local_size(self, game_ids: GameId, context: Dict[str, pathlib.PurePath]) -> Optional[int]:
+    async def prepare_local_size_context(self, game_ids: List[GameId]) -> Dict[str, pathlib.PurePath]:
+        game_id_crc_map: Dict[GameId, str] = {}
+        for filepath, manifest in zip(self._local_games._manifests_stats.keys(), self._local_games._manifests):
+            game_id_crc_map[manifest.game_id] = pathlib.PurePath(filepath).parent / 'map.crc'
+        return game_id_crc_map
+
+    async def get_local_size(self, game_id: GameId, context: Dict[str, pathlib.PurePath]) -> Optional[int]:
         try:
-            # EA D has a new way of putting folders. CRC folder is now after a folder, being the name of the game.
-            # eg: Battlefield 1 would be in "InstallData\Battlefield 1\base-Origin.OFT.xxxxxx\map.eacrc"
-            # since there's an issue with the context (for now), let's guess the path
-            for root, dirs in os.walk(get_local_content_path()):
-                if "base-"+game_ids in dirs:
-                    path =  os.path.join(root, "base-"+game_ids, "map.eacrc")
-            return parse_map_crc_for_total_size(path)
+            return parse_map_crc_for_total_size(context[game_id])
         except FileNotFoundError:
             return None
         except KeyError:

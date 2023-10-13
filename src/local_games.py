@@ -1,4 +1,3 @@
-from hashlib import sha1, sha3_256
 import json
 import re
 import functools
@@ -150,10 +149,6 @@ def get_local_games_from_manifests():
 
     # since the awakening of EA Desktop, the logic has changed concerning the verification of installed games.
     # manifests are no longer necessary in order to verify if a game is installed or not.
-    # 530c11479fe252fc5aabc24935b9776d4900eb3ba58fdc271e0d6229413ad40e = allUsersGenericId
-    iv = "allUsersGenericIdIS".encode('ascii')
-    iv_hash = sha3_256(iv).digest()
-
     running_processes = [exe for pid, exe in process_iter() if exe is not None]
 
     def is_game_running(game_folder_name):
@@ -164,24 +159,24 @@ def get_local_games_from_manifests():
     
     is_file = os.path.join(tempfile.gettempdir(), "is.json")
 
-    if platform.system() == "Windows":
-        is_decrypt_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "is_decryption_galaxy.py")
-        python_path = os.path.join(get_python_path(), "python.exe")
-        if not os.path.exists(python_path):
-            python_path = "python.exe"
-        if os.path.exists(is_decrypt_path):
-            subprocess.check_output("Powershell -Command \"Start-Process \'" + python_path + "\' -ArgumentList \'" + is_decrypt_path + "\' -Verb RunAs\"", shell=True)
-            time.sleep(10)
-    
     if os.path.exists(is_file):
-        installed_games = [json.loads(line) for line in open(is_file, 'r', encoding='utf-8')]
-        logger.info(f"Opening manifest file ", is_file + " ...")
-        for game in installed_games[0]['installInfos']:
-                logger.info(f"Found installed game: ", game['softwareId'])
-                if game['executablePath'] != "":
-                    local_games.append(LocalGame(game['softwareId'], LocalGameState.Installed))
-                else:
-                    local_games.append(LocalGame(game['softwareId'], LocalGameState.None_))
+        if platform.system() == "Windows":
+            is_decrypt_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "is_decryption_galaxy.py")
+            python_path = os.path.join(get_python_path(), "python.exe")
+            if not os.path.exists(python_path):
+                python_path = "python.exe"
+            if os.path.exists(is_decrypt_path):
+                subprocess.check_output("Powershell -Command \"Start-Process \'" + python_path + "\' -ArgumentList \'" + is_decrypt_path + "\' -Verb RunAs\"", shell=True)
+                time.sleep(10)
+        
+            installed_games = [json.loads(line) for line in open(is_file, 'r', encoding='utf-8')]
+            logger.info(f"Opening manifest file {is_file} ...")
+            for game in installed_games[0]['installInfos']:
+                    logger.info(f"Found installed game: ", game['softwareId'])
+                    if game['executablePath'] != "":
+                        local_games.append(LocalGame(game['softwareId'], LocalGameState.Installed))
+                    else:
+                        local_games.append(LocalGame(game['softwareId'], LocalGameState.None_))
     else:
         logger.warning("%TEMP%\is.json file not found. Local games won't be checked. We strongly suggest to use the is_decryption_galaxy.py file to generate the decrypted IS file.")
 
