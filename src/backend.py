@@ -1,6 +1,6 @@
+import json
 import logging
 import random
-import sys
 import time
 import xml.etree.ElementTree as ET
 from collections import namedtuple
@@ -15,6 +15,7 @@ from galaxy.api.errors import (
 from galaxy.api.types import Achievement, SubscriptionGame, Subscription
 from galaxy.http import HttpClient
 from yarl import URL
+from datetime import datetime
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ MasterTitleId = NewType("MasterTitleId", str)
 AchievementSet = NewType("AchievementSet", str)
 OfferId = NewType("OfferId", str)
 Timestamp = NewType("Timestamp", int)
+GameSlug = NewType("GameSlug", str)
 Json = Dict[str, Any]  # helper alias for general purpose
 
 SubscriptionDetails = namedtuple('SubscriptionDetails', ['tier', 'end_time'])
@@ -178,59 +180,52 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
 
     async def get_entitlements(self) -> List[Json]:
-        if sys.platform == 'win32':
-            url = "{}?operationName=getPreloadedOwnedGames&variables={{\"isMac\":false,\"locale\":\"fr\",\"limit\":5000,\"next\":\"0\",\"type\":[\"DIGITAL_FULL_GAME\",\"PACKAGED_FULL_GAME\"],\"entitlementEnabled\":true,\"storefronts\":[\"EA\",\"STEAM\",\"EPIC\"],\"ownershipMethods\":[\"UNKNOWN\",\"ASSOCIATION\",\"PURCHASE\",\"REDEMPTION\",\"GIFT_RECEIPT\",\"ENTITLEMENT_GRANT\",\"DIRECT_ENTITLEMENT\",\"PRE_ORDER_PURCHASE\",\"VAULT\",\"XGP_VAULT\",\"STEAM\",\"STEAM_VAULT\",\"STEAM_SUBSCRIPTION\",\"EPIC\",\"EPIC_VAULT\",\"EPIC_SUBSCRIPTION\"],\"platforms\":[\"PC\"]}}&extensions={{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"a2b36612157ecaa1a40aa5508d96137ce27c4c344d21dcb6d4feec7f47739fb3\"}}}}".format(
-                self._get_api_host()
-            )
-        elif sys.platform == 'darwin':
-            url = "{}?operationName=getPreloadedOwnedGames&variables={{\"isMac\":true,\"locale\":\"fr\",\"limit\":5000,\"next\":\"0\",\"type\":[\"DIGITAL_FULL_GAME\",\"PACKAGED_FULL_GAME\"],\"entitlementEnabled\":true,\"storefronts\":[\"EA\",\"STEAM\",\"EPIC\"],\"ownershipMethods\":[\"UNKNOWN\",\"ASSOCIATION\",\"PURCHASE\",\"REDEMPTION\",\"GIFT_RECEIPT\",\"ENTITLEMENT_GRANT\",\"DIRECT_ENTITLEMENT\",\"PRE_ORDER_PURCHASE\",\"VAULT\",\"XGP_VAULT\",\"STEAM\",\"STEAM_VAULT\",\"STEAM_SUBSCRIPTION\",\"EPIC\",\"EPIC_VAULT\",\"EPIC_SUBSCRIPTION\"],\"platforms\":[\"PC\"]}}&extensions={{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"a2b36612157ecaa1a40aa5508d96137ce27c4c344d21dcb6d4feec7f47739fb3\"}}}}".format(
-                self._get_api_host()
-            )
-        response = await self._http_client.get(url)
+        # Step 1 = get all Origin product IDs
+        u1 = "{}?query=query{{me{{ownedGameProducts(locale:\"en\" entitlementEnabled:true storefronts:[EA,STEAM,EPIC] type:[DIGITAL_FULL_GAME,PACKAGED_FULL_GAME] platforms:[PC] paging:{{limit:9999}}){{items{{originOfferId product{{gameSlug baseItem {{gameType}} gameProductUser{{ownershipMethods entitlementId}}}}}}}}}}}}".format(self._get_api_host())
+        r1 = await self._http_client.get(u1)
         try:
-            data = await response.json()
-            return data['data']['me']['ownedGameProducts']['items']
+            d1 = await r1.json()
+            return d1['data']['me']['ownedGameProducts']['items']
+        except (ValueError, KeyError) as e:
+            logger.exception("Can not parse backend response: %s, error %s", await d1.text(), repr(e))
+            raise UnknownBackendResponse()
+    
+    async def get_offer(self, offer_id) -> Json:
+        u2 = "{}?query=query {{legacyOffers(offerIds: [\"{}\"], locale: \"en\") {{ offerId: id contentId basePlatform primaryMasterTitleId achievementSetOverride multiplayerId installCheckOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\") {{ items {{ name originOfferId baseItem {{ title }} gameSlug}}}}}}".format(
+                self._get_api_host(),
+                offer_id,
+                offer_id
+            )
+        u2 = u2.replace(' ', '%20').replace('+', '%20')
+        response = await self._http_client.get(u2)
+        try:
+            r2 = await response.json()
+            return r2['data']['legacyOffers'][0], r2['data']['gameProducts']['items'][0]
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()
-    
-    async def get_offer(self, game_slug) -> Json:
-        if sys.platform == 'win32':
-            url = "{}?operationName=getUserOwnedProduct&variables={{\"isMac\":false,\"offerIds\":[\"{}\"],\"storefronts\":[\"EA\",\"STEAM\",\"EPIC\"]}}&extensions={{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"36a83accd60d006be3805448e028b73656d578c6bd93b88efdae5e20f9b35853\"}}}}".format(
-                self._get_api_host(),
-                game_slug
-            )
-        elif sys.platform == 'darwin':
-            url = "{}?operationName=getUserOwnedProduct&variables={{\"isMac\":true,\"offerIds\":[\"{}\"],\"storefronts\":[\"EA\",\"STEAM\",\"EPIC\"]}}&extensions={{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"36a83accd60d006be3805448e028b73656d578c6bd93b88efdae5e20f9b35853\"}}}}".format(
-                self._get_api_host(),
-                game_slug
-            )
-
-        response = await self._http_client.get(url)
-        try:
-            return await response.json()
-        except ValueError as e:
-            logger.exception("Can not parse backend response: %s, error %s", await response.text, repr(e))
-            raise UnknownBackendResponse()
+        
 
     async def get_achievements(self, offer: OfferId, persona: str) -> Dict[str, List[Achievement]]:
-        url = "{}?operationName=ownedGameAchievements&variables={{\"offerId\":\"{}\",\"playerPsd\":\"{}\",\"locale\":\"en\"}}&extensions={{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"1c6280579cd6b172787735e8efacb21e62dc08039115720254d8948922016277\"}}}}".format(
+        url = "{}?operationName=ownedGameAchievements&variables={{\"offerId\":\"{}\",\"playerPsd\":\"{}\",\"locale\":\"en\",\"showHidden\":true}}&extensions={{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"aaf7932f6324d96ea026751365825bb4605776ed6023f29cb1e620477691b727\"}}}}".format(
             self._get_api_host(),
             str(offer),
             str(persona)
         )
         response = await self._http_client.get(url)
-
         def parser(json_data: Dict) -> List[Achievement]:
             achievements = []
             try:
                 for achievement in json_data["achievements"]:
                     if achievement["awardCount"] == 1:
-                        achievement_data = {
-                            "id": achievement["id"],
-                            "name": achievement["name"],
-                            "unlock_time": time.time()
-                        }
+                        date_str = achievement["date"]
+                        date_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+                        unix_timestamp = int(date_obj.timestamp())
+                        achievement_data = Achievement(
+                            achievement_id=achievement["id"],
+                            achievement_name=achievement["name"],
+                            unlock_time=unix_timestamp
+                        )
                         achievements.append(achievement_data)
             except KeyError as e:
                 logger.exception("Can not parse achievements from backend response %s", repr(e))
@@ -250,12 +245,7 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
 
     async def get_achievement_set(self, offer_id: OfferId, persona_id: str) -> str:
-        url = "{}?query=query {{achievements(offerId:\"{}\",playerPsd:\"{}\"){{id}}}}".format(
-                self._get_api_host(),
-                offer_id,
-                persona_id
-            )
-        
+        url = "{}?query=query {{achievements(offerId:\"{}\",playerPsd:\"{}\"){{id}}}}".format(self._get_api_host(), offer_id, persona_id)
         response = await self._http_client.get(url)
     
         try:
@@ -271,9 +261,9 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
 
     async def get_game_time(self, game_slug):
-        url = "{}?query=query {{me {{recentGames(gameSlugs:\"{}\"){{items {{lastSessionEndDate totalPlayTimeSeconds}}}}}}}}".format(
+        url = "{}?query=query {{me {{recentGames(gameSlugs:{}){{items {{lastSessionEndDate totalPlayTimeSeconds}}}}}}}}".format(
             self._get_api_host(),
-            game_slug
+            json.dumps(game_slug)
         )
 
         response = await self._http_client.get(url)
@@ -297,16 +287,19 @@ class OriginBackendClient:
         """
         try:
             def parse_last_played_time(lastplayed_timestamp) -> Optional[int]:
-                if lastplayed_timestamp is None:
-                    return None
-                return round(int(lastplayed_timestamp.text) / 1000) or None  # response is in miliseconds
+                try:
+                    time_delta = datetime.strptime(lastplayed_timestamp, "%Y-%m-%dT%H:%M:%S.%fZ") - datetime(1970, 1, 1)
+                except ValueError:
+                    raise ValueError(f"time data '{lastplayed_timestamp}' does not match with the expected format")
+                        
+                return int(time_delta.total_seconds())
 
             content = await response.json()
             # assuming this is just EA's way of saying we never played a game.
             if not content['data']['me']['recentGames']['items']:
                 return 0, None
             else:
-                total_play_time = round(int(content['data']['me']['recentGames']['items'][0]['totalPlayTimeSeconds'].text) / 60)  # response is in seconds
+                total_play_time = round(int(content['data']['me']['recentGames']['items'][0]['totalPlayTimeSeconds']) / 60)  # response is in seconds
                 last_played_time = parse_last_played_time(content['data']['me']['recentGames']['items'][0]['lastSessionEndDate'])
 
             return total_play_time, last_played_time
@@ -352,47 +345,48 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
 
     # Doesn't seem to exist as-is in EA Desktop, does appear in an endpoint response. Might be subject to subsequent rework.
-    async def get_lastplayed_games(self, user_id) -> Dict[MasterTitleId, Timestamp]:
-        response = await self._http_client.get("{base_api}/atom/users/{user_id}/games/lastplayed".format(
-            base_api=self._get_origin_host(),
-            user_id=user_id
-        ))
+    async def get_lastplayed_games(self, game_slugs) -> Dict[GameSlug, Timestamp]:
+        url = "{}?query=query {{me {{recentGames(gameSlugs:{}){{items {{gameSlug lastSessionEndDate}}}}}}}}".format(
+            self._get_api_host(),
+            json.dumps(game_slugs)
+        )
+
+        response = await self._http_client.get(url.replace(' ', '%20').replace('+', '%20'))
 
         '''
-        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <lastPlayedGames>
-            <userId>1008620950926</userId>
-            <lastPlayed>
-                <masterTitleId>180975</masterTitleId>
-                <timestamp>2019-05-17T14:45:48.001Z</timestamp>
-            </lastPlayed>
-        </lastPlayedGames>
+        {
+            "data": {
+                "me": {
+                "recentGames": {
+                    "items": [
+                        {
+                            "gameSlug": "the-sims-4",
+                            "lastSessionEndDate": "2024-02-29T16:00:23.000Z"
+                        }
+                    ],
+                },
+                }
+            }
+        }
         '''
 
-        def parse_title_id(product_info_xml) -> MasterTitleId:
-            return product_info_xml.find("masterTitleId").text
+        def parse_last_session_end_date(date) -> int:
+            try:
+                time_delta = datetime.strptime(date, "%Y-%m-%dT%H:%M:%S.%fZ") - datetime(1970, 1, 1)
+            except ValueError:
+                raise ValueError(f"time data '{date}' does not match with the expected format")
+                    
+            return int(time_delta.total_seconds())
 
-        def parse_timestamp(product_info_xml) -> Timestamp:
-            formats = (
-                "%Y-%m-%dT%H:%M:%S.%fZ",
-                "%Y-%m-%dT%H:%M:%SZ"  # no microseconds
-            )
-            td = product_info_xml.find("timestamp").text
-            for date_format in formats:
-                try:
-                    time_delta = datetime.strptime(td, date_format) - datetime(1970, 1, 1)
-                except ValueError:
-                    continue
-                return Timestamp(int(time_delta.total_seconds()))
-            raise ValueError(f"time data '{td}' does not match known formats")
 
         try:
-            content = await response.text()
+            content = await response.json()
+            games = content["data"]["me"]["recentGames"]["items"]
             return {
-                parse_title_id(product_info_xml): parse_timestamp(product_info_xml)
-                for product_info_xml in ET.ElementTree(ET.fromstring(content)).iter("lastPlayed")
+                game["gameSlug"]: parse_last_session_end_date(game["lastSessionEndDate"])
+                for game in games
             }
-        except (ET.ParseError, AttributeError, ValueError) as e:
+        except (KeyError, ValueError) as e:
             logger.exception("Can not parse backend response: %s", await response.text())
             raise UnknownBackendResponse(e)
 

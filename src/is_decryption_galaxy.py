@@ -233,17 +233,17 @@ with open(file_path, 'rb') as infile, open(os.path.join(tempfile.gettempdir(), '
         decrypted_block = aes.decrypt(block)
         outfile.write(decrypted_block)
 
-
 # verifying the JSON file
-# seems like there's undescribed characters at the end of the file
-# so we need to remove them
+# Remove everything after the JSON ending
 
-json_string = ""
-with open(os.path.join(tempfile.gettempdir(), "is.json"), "r+") as f:
-    # Remove undesired characters at the end of the file
-    json_string = re.sub(r'\x06+', '', f.read())
+json_ending = ',"schema":{"version":23}}'
+with open(os.path.join(tempfile.gettempdir(), "is.json"), 'r+', encoding="utf-8") as f:
+    content = f.read()
+    end_index = content.find(json_ending)
+    if end_index != -1:
+        content = content[:end_index + len(json_ending)]  # keep only the content before and including the JSON ending
     f.seek(0)
-    f.write(json_string)
+    f.write(content)
     f.truncate()
 
 print("IS decrypted successfully.")

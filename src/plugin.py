@@ -24,7 +24,7 @@ from galaxy.api.types import (
 )
 
 from backend import AuthenticatedHttpClient, MasterTitleId, OfferId, OriginBackendClient, Timestamp, AchievementSet, Json
-from local_games import get_local_content_path, LocalGames, launch_decryption_process, parse_map_crc_for_total_size
+from local_games import LocalGames, launch_decryption_process, parse_total_size
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
 import re
@@ -146,26 +146,10 @@ class OriginPlugin(Plugin):
         owned_offers = await self._get_owned_offers()
         games = []
         for game_id, offer in owned_offers.items():
-            if 'i18n' in offer:
+            if game_id.startswith("Origin.OFR") and game_id is not None:
                 game = Game(
                     game_id,
-                    offer["i18n"]["displayName"],
-                    None,
-                    LicenseInfo(LicenseType.SinglePurchase, None)
-                )
-                games.append(game)
-            elif 'masterTitle' in offer:
-                game = Game(
-                    game_id,
-                    offer["masterTitle"],
-                    None,
-                    LicenseInfo(LicenseType.SinglePurchase, None)
-                )
-                games.append(game)
-            elif 'multiplayerId' in offer:
-                game = Game(
-                    game_id,
-                    offer["name"],
+                    offer["displayName"],
                     None,
                     LicenseInfo(LicenseType.SinglePurchase, None)
                 )
@@ -194,23 +178,19 @@ class OriginPlugin(Plugin):
         )
 
     async def get_unlocked_achievements(self, game_id: GameId, context: AchievementsImportContext) -> List[Achievement]:
-        try:
-            offerid = self._offer_id_from_game_id(game_id)
-            achievement_set = await self._backend_client.get_achievement_set(offerid, self._persona_id)
-            # See backend response for further information.
-            if achievement_set is None:
-                return []
-            else:
-                return (await self._backend_client.get_achievements(
-                    offerid, self._persona_id
-                ))[achievement_set]
+        offer = self._offer_id_from_game_id(game_id)
+        if offer not in context.owned_games:
+            logger.warning("Game '{}' doesn't have achievements.".format(game_id))
+            return []
+        else:
+            achievements_set = context.owned_games[offer]
+            achievements = context.achievements.get(achievements_set)
+            if achievements is not None:
+                return achievements
 
-        except KeyError:
-            logger.exception("Failed to parse achievements for game {}".format(game_id))
-            raise UnknownBackendResponse()
-        except TypeError as e:
-            logger.exception("Failed to retrieve achievements for game {}: {}".format(game_id, e))
-            raise UnknownBackendResponse()
+            return (await self._backend_client.get_achievements(
+                offer, self._persona_id
+            ))[achievements_set]
 
     async def _get_offers(self, offer_ids: Iterable[OfferId]) -> Dict[OfferId, Json]:
         """
@@ -235,9 +215,14 @@ class OriginPlugin(Plugin):
                 if isinstance(offer, Exception):
                     logger.error(repr(offer))
                     continue
-                offer_id = offer['data']['gameProducts']['items'][0]["originOfferId"]
-                offers[offer_id] = offer['data']['gameProducts']['items'][0]
-                self._offer_id_cache[offer_id] = offer['data']['gameProducts']['items'][0]
+                if offer[0] and offer[1]:
+                    offer_id = offer[1]["originOfferId"]
+                    offer[0]["gameSlug"] = offer[1]["gameSlug"]
+                    offers[offer_id] = offer[0]
+                    self._offer_id_cache[offer_id] = offer[0]
+                else:
+                    logger.warning(f"Data for {offer} not found.")
+                    continue
 
             self.push_cache()
 
@@ -246,17 +231,42 @@ class OriginPlugin(Plugin):
     async def _get_owned_offers(self) -> Dict[GameId, Json]:
         def get_game_id(entitlement: Json) -> GameId:
             offer_id = entitlement["originOfferId"]
-            external_types = entitlement['product']['gameProductUser']['ownershipMethods']
-            if external_types[0] == "STEAM":
+            external_type = entitlement["product"]["gameProductUser"]["ownershipMethods"][0]
+            if external_type == "STEAM":
                 return GameId(f"{offer_id}@steam")
-            elif external_types[0] == "EPIC":
+            elif external_type == "EPIC":
                 return GameId(f"{offer_id}@epic")
-            else:
+            else: 
                 return GameId(offer_id)
 
-        entitlements = await self._backend_client.get_entitlements()
-        basegame_entitlements = [x for x in entitlements if x["product"]["baseItem"]["gameType"] == "BASE_GAME"]
+        entitlement_data = await self._backend_client.get_entitlements()
+        basegame_entitlements = [x for x in entitlement_data if x["product"] is not None and x["product"]["baseItem"]["gameType"] == "BASE_GAME"]
         basegame_offers = await self._get_offers([x["originOfferId"] for x in basegame_entitlements])
+
+        # write a copy of the IS file to add the offerID, with a link with the game slug
+        is_file = os.path.join(tempfile.gettempdir(), "is.json")
+        with open(is_file, 'r') as file:
+            json_file = json.load(file)
+
+        # Create a dictionary mapping gameSlug to offer
+        offer_dict = {offer['gameSlug']: offer for offer in basegame_offers.values() if "gameSlug" in offer}
+
+        for game in json_file['installInfos']:
+            if isinstance(game, dict):
+                if game['softwareId'].startswith("Origin") or game['softwareId'].startswith("OFB") or game['softwareId'].startswith("DR"):
+                    if game['baseSlug'] in offer_dict:
+                        game['offerId'] = offer_dict[game['baseSlug']]["offerId"]
+                    else:
+                        continue
+                else:
+                    print(f"softwareId does not start with 'Origin.SFT': {game['softwareId']}")
+            else:
+                print(f"game is not a dictionary: {game}")
+        
+        new_data = json.dumps(json_file)
+
+        with open(os.path.join(tempfile.gettempdir(), "is_with_offer.json"), 'w') as new_file:
+            new_file.write(new_data)
 
         return {
             get_game_id(ent): basegame_offers[ent["originOfferId"]]
@@ -323,25 +333,32 @@ class OriginPlugin(Plugin):
         asyncio.create_task(notify_local_games_changed())
 
     ###
-    # Since EA Desktop, we need to juggle with the IS file (for the installed games) and the new "map.eacrc" file.
-    # The BIG issue here is to get the game name to correspond to the folder name, in order for us to access the correct "map.eacrc" file
-    # Even here, i'm quite unsure about if this method will work as expected. This is a new feature that EA Desktop has implemented.
+    # Since EA Desktop, we need to juggle with the IS file (for the installed games).
+    # Don't even bother checking the map.eacrc file, as it's CRC32 checksums, so no sizes.
+    # The only way is actually getting the installation folder (if it exists) and checking the size of the game folder itself.
     ###
     async def prepare_local_size_context(self, game_ids: List[GameId]) -> Dict[str, pathlib.PurePath]:
         game_id_crc_map: Dict[GameId, str] = {}
-        platform_path = get_local_content_path()
-        # Blame me for that cumbersome method, but I believe it's the only way to make that work.
-        # Since we have NO idea about the game name but we have the game ID, recursively search for the game ID in the subfolders.
-        for root, dirs, files in os.walk(platform_path):
-            for dir in dirs:
-                for game_id in game_ids:
-                    if dir == "base-" + game_id or dir == "dlc-" + game_id:
-                        game_id_crc_map[game_id] = pathlib.PurePath(root, dir) / 'map.eacrc'
+        is_file = os.path.join(tempfile.gettempdir(), "is.json")
+        file = open(is_file)
+        json_file = json.load(file)
+        # Game ID is "Software ID" in the IS file.
+        for game_id in game_ids:
+            for game in json_file['installInfos']:
+                if game_id in game['softwareId']:
+                    if game['executablePath'] != "":
+                        # executablePath is the path to the executable file
+                        if os.path.exists(game['executablePath']):
+                            game_id_crc_map[game_id] = pathlib.Path(game['executablePath']).parent
+                        else:
+                            game_id_crc_map[game_id] = None
+                    else:
+                        game_id_crc_map[game_id] = None
         return game_id_crc_map
 
     async def get_local_size(self, game_id: GameId, context: Dict[str, pathlib.PurePath]) -> Optional[int]:
         try:
-            return parse_map_crc_for_total_size(context[game_id])
+            return parse_total_size(context[game_id])
         except FileNotFoundError:
             return None
         except KeyError:
@@ -358,15 +375,10 @@ class OriginPlugin(Plugin):
                     return multiplayer_id
             return None
 
-    async def _get_game_times_for_master_title(
-        self,
-        game_id: GameId,
-        offer_id: OfferId,
-        lastplayed_time: Optional[Timestamp]
-    ) -> GameTime:
+    async def _get_game_times_for_master_title(self, game_id: GameId, game_slug: GameSlug, lastplayed_time: Optional[Timestamp]) -> GameTime:
         """
         :param game_id - to get from cache
-        :param offer_id - to fetch from backend
+        :param game_slug - to fetch from backend
         :param lastplayed_time - to decide on cache freshness
         """
         def get_cached_game_times(_game_id: GameId, _lastplayed_time: Optional[Timestamp]) -> Optional[GameTime]:
@@ -388,8 +400,8 @@ class OriginPlugin(Plugin):
         if cached_game_time is not None:
             return cached_game_time
 
-        response = await self._backend_client.get_game_time(offer_id)
-        game_time: GameTime = GameTime(game_id, response[0], response[1])
+        total_play_time, last_played_time = await self._backend_client.get_game_time(game_slug)
+        game_time: GameTime = GameTime(game_id, total_play_time, last_played_time)
         self._game_time_cache[game_id] = game_time
         self._persistent_cache_updated = True
         return game_time
@@ -397,10 +409,11 @@ class OriginPlugin(Plugin):
     async def prepare_game_times_context(self, game_ids: List[GameId]) -> Any:
         self._check_authenticated()
         offer_ids = [self._offer_id_from_game_id(game_id) for game_id in game_ids]
+        game_slugs = [GameSlug(self._offer_id_cache[offer_id]["gameSlug"]) for offer_id in offer_ids if "gameSlug" in self._offer_id_cache[offer_id]]
 
         _, last_played_games = await asyncio.gather(
             self._get_offers(offer_ids),  # update local cache ignoring return value
-            self._backend_client.get_lastplayed_games(self._user_id)
+            self._backend_client.get_lastplayed_games(game_slugs)
         )
 
         return last_played_games
@@ -412,13 +425,12 @@ class OriginPlugin(Plugin):
             if offer is None:
                 logger.exception("Internal cache out of sync")
                 raise UnknownError()
-
-            master_title_id: MasterTitleId = offer["masterTitleId"]
+            game_slug = GameSlug(offer["gameSlug"])
 
             return await self._get_game_times_for_master_title(
                 game_id,
-                offer_id,
-                last_played_games.get(master_title_id)
+                game_slug,
+                last_played_games.get(game_slug)
             )
 
         except KeyError as e:

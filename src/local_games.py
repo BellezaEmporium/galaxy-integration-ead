@@ -1,6 +1,5 @@
+import asyncio
 import json
-import re
-import functools
 import logging
 import os
 import time
@@ -16,48 +15,15 @@ if platform.system() == "Windows":
 else:
     import psutil
 
-from enum import Enum, auto, Flag
+from enum import Flag
 from typing import Iterator, Tuple
 
 from galaxy.api.errors import FailedParsingManifest
 from galaxy.api.types import LocalGame, LocalGameState
 
+from backend import AuthenticatedHttpClient, OriginBackendClient
 
 logger = logging.getLogger(__name__)
-
-
-class _State(Enum):
-    kInvalid = auto()
-    kError = auto()
-    kPaused = auto()
-    kPausing = auto()
-    kCanceling = auto()
-    kReadyToStart = auto()
-    kInitializing = auto()
-    kResuming = auto()
-    kPreTransfer = auto()
-    kPendingInstallInfo = auto()
-    kPendingEulaLangSelection = auto()
-    kPendingEula = auto()
-    kEnqueued = auto()
-    kTransferring = auto()
-    kPendingDiscChange = auto()
-    kPostTransfer = auto()
-    kMounting = auto()
-    kUnmounting = auto()
-    kUnpacking = auto()
-    kDecrypting = auto()
-    kReadyToInstall = auto()
-    kPreInstall = auto()
-    kInstalling = auto()  # This status is used for games which are installing or updating
-    kPostInstall = auto()
-    kFetchLicense = auto()
-    kCompleted = auto()
-
-    @classmethod
-    def _missing_(cls, value):
-        logging.warning('Unrecognized state: %s' % value)
-        return cls.kInvalid
 
 
 class OriginGameState(Flag):
@@ -70,30 +36,15 @@ class OriginGameState(Flag):
 # Sneaky EA devs reversed the bytes for each file mentioned in each "map.eacrc" file. So we need to reverse it back.
 # Kudos to Linguin for guiding me into the right path.
 ###
-
-def parse_map_crc_for_total_size(filepath) -> int:
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except IOError:
-        logging.error(f"Could not open file: {filepath}")
-        return None
-
-    pattern = r'E4X\x01(.{8})'  # Capture the next 8 characters (4 bytes)
-    sizes = re.findall(pattern, content)
-
-    if not sizes:
-        logging.info(f"No matches found in file: {filepath}")
-        return None
-
-    try:
-        sizes = [int(size[::-1], 16) for size in sizes]
-    except ValueError:
-        logging.error(f"Could not convert sizes to integers: {sizes}")
-        return None
-
-    return functools.reduce(lambda a, b : a + int(b), sizes, 0)
-
+def parse_total_size(filepath) -> int:
+    # get folder size
+    total_size = 0
+    if filepath is not None:
+        for dirpath, _, filenames in os.walk(filepath):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                total_size += os.path.getsize(fp)
+    return total_size
 
 if platform.system() == "Windows":
     def get_process_info(pid) -> Tuple[int, Optional[str]]:
@@ -175,36 +126,36 @@ def launch_decryption_process():
             subprocess.check_output("Powershell -Command \"Start-Process \'" + python_path + "\' -ArgumentList \'" + is_decrypt_path + "\' -Verb RunAs\"", shell=True)
             time.sleep(10)
 
-def get_local_games_from_manifests(self):
+def get_local_games_from_manifests(json_file):
     local_games = []
 
-    # since the awakening of EA Desktop, the logic has changed concerning the verification of installed games.
-    # manifests are no longer necessary in order to verify if a game is installed or not.
-    running_processes = [exe for _, exe in process_iter() if exe is not None]
+    running_processes = set(exe for _, exe in process_iter() if exe is not None)
 
     def is_game_running(game_folder_name):
-        for exe in running_processes:
-            if game_folder_name in exe:
-                return True
-        return False
-    
-    is_file = os.path.join(tempfile.gettempdir(), "is.json")
-    if not os.path.exists(is_file):
-        launch_decryption_process()
-    file = open(is_file)
-    json_file = json.load(file)
-    logger.info(f"Opening manifest file {is_file} ...")
-    for game in json_file['installInfos']:
-        # logging DLCs is unnecessary
-        if game['softwareId'].startswith("Origin") or game['softwareId'].startswith("OFB") or game['softwareId'].startswith("DR"):
-            if game['executablePath'] != "" and game['detailedState']['installStatus'] == 5:
-                local_games.append(LocalGame(game['softwareId'], LocalGameState.Installed))
-            else:
-                local_games.append(LocalGame(game['softwareId'], LocalGameState.None_))
+        return any(game_folder_name in exe for exe in running_processes)
 
-    for local_game in local_games:
-        if is_game_running(local_game.game_id):
-            local_game.local_game_state = LocalGameState.Running
+    with open(json_file) as file:
+        json_file = json.load(file)
+
+    logger.info(f"Opening IS ...")
+    for game in json_file['installInfos']:
+        game_state = OriginGameState.None_
+        state = LocalGameState.None_
+        # logging DLCs is unnecessary
+        if 'offerId' in game:
+            if game['softwareId'].startswith("Origin") or game['softwareId'].startswith("OFB") or game['softwareId'].startswith("DR"):
+                if game['executablePath'] != "" and game['detailedState']['installStatus'] == 5:
+                    game_state |= OriginGameState.Installed
+                    game_state |= OriginGameState.Playable
+                    if game['executablePath'] and ".exe" in game['executablePath'] and game_state == OriginGameState.Installed:
+                        game_folder_name = game['executablePath'].split("\\")[-1].split(".")[0]
+                        if is_game_running(game_folder_name):
+                            state |= LocalGameState.Running
+                        else:
+                            state |= LocalGameState.Installed
+                        local_games.append(LocalGame(game['offerId'], state))
+                    else:
+                        local_games.append(LocalGame(game['offerId'], state))
 
     return local_games
 
@@ -262,7 +213,14 @@ def get_local_content_path():
 class LocalGames:
     def __init__(self):
         try:
-            self._local_games = get_local_games_from_manifests(self)
+            # verify is IS.json file exists
+            if not os.path.exists(os.path.join(tempfile.gettempdir(), "is.json")):
+                launch_decryption_process()
+            elif not os.path.exists(os.path.join(tempfile.gettempdir(), "is_with_offer.json")):
+                logger.info("Entitlements weren't reached yet. Waiting for the modified JSON file to be created.")
+                self._local_games = []
+            else:
+                self._local_games = get_local_games_from_manifests(os.path.join(tempfile.gettempdir(), "is_with_offer.json"))
         except FailedParsingManifest:
             logger.warning("Failed to parse manifest. Most likely there's no presence of the IS JSON file.")
             self._local_games = []
@@ -276,7 +234,16 @@ class LocalGames:
         returns list of changed games (added, removed, or changed)
         updated local_games property
         '''
-        new_local_games = get_local_games_from_manifests(self)
+        # verify is IS.json file exists
+        if not os.path.exists(os.path.join(tempfile.gettempdir(), "is.json")):
+            launch_decryption_process()
+        elif not os.path.exists(os.path.join(tempfile.gettempdir(), "is_with_offer.json")):
+            logger.info("Entitlements weren't reached yet. Waiting for the modified JSON file to be created.")
+            new_local_games = []
+            self._local_games = []
+        else:
+            new_local_games = get_local_games_from_manifests(os.path.join(tempfile.gettempdir(), "is_with_offer.json"))
+
         notify_list = get_state_changes(self._local_games, new_local_games)
         self._local_games = new_local_games
 
