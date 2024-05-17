@@ -1,6 +1,8 @@
 # virtualenv
 .venv/
 venv/
+Scripts/
+pyvenv.cfg
 
 # pytest
 __pycache__/
@@ -10,6 +12,7 @@ __pycache__/
 # build artifacts
 build/
 output/
+Lib/
 *.spec
 
 # editors
