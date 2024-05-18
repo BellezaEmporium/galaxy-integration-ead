@@ -102,8 +102,6 @@ class AuthenticatedHttpClient(HttpClient):
                     # should look like qrc:/html/login_successful.html#access_token=
                     # note that there's some other parameters afterwards, so we need to isolate the variable well
                     self._access_token = data.split("#")[1].split("=")[1].split("&")[0]
-                    creds = {"access_token": self._access_token}
-                    self._store_credentials(creds)
             else:
                 await self._get_access_token()
         except (BackendNotAvailable, BackendTimeout, BackendError, NetworkError):
