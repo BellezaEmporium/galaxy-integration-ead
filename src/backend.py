@@ -2,10 +2,9 @@ import json
 import logging
 import random
 import time
-import xml.etree.ElementTree as ET
 from collections import namedtuple
 from datetime import datetime
-from typing import Dict, List, NewType, Optional, Set, Any, Tuple
+from typing import Dict, List, NewType, Optional, Any, Tuple
 
 import aiohttp
 from galaxy.api.errors import (
@@ -89,7 +88,24 @@ class AuthenticatedHttpClient(HttpClient):
 
     async def _refresh_token(self):
         try:
-            await self._get_access_token()
+            if self._access_token is not None:
+                # diff method, once you have one access_token, you can get another one on refresh.
+                url = "https://accounts.ea.com/connect/auth"
+                params = {
+                    "client_id": "JUNO_PC_CLIENT",
+                    "scope": "signin dp.client.default",
+                    "access_token": self._access_token,
+                }
+                response = await super().request("GET", url, params=params, allow_redirects=False)
+                if "access_token" in response.headers["Location"]:
+                    data = response.headers["Location"]
+                    # should look like qrc:/html/login_successful.html#access_token=
+                    # note that there's some other parameters afterwards, so we need to isolate the variable well
+                    self._access_token = data.split("#")[1].split("=")[1].split("&")[0]
+                    creds = {"access_token": self._access_token}
+                    self._store_credentials(creds)
+            else:
+                await self._get_access_token()
         except (BackendNotAvailable, BackendTimeout, BackendError, NetworkError):
             logger.warning("Failed to refresh token for independent reasons")
             raise
@@ -101,7 +117,6 @@ class AuthenticatedHttpClient(HttpClient):
             raise AccessDenied("Failed to refresh token")
 
     async def _get_access_token(self):
-        # the key is in the "Location" header, no redirection needed.
         url = "https://accounts.ea.com/connect/auth"
         params = {
             "client_id": "JUNO_PC_CLIENT",
@@ -191,7 +206,7 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
     
     async def get_offer(self, offer_id) -> Json:
-        u2 = "{}?query=query {{legacyOffers(offerIds: [\"{}\"], locale: \"en\") {{ offerId: id contentId basePlatform primaryMasterTitleId achievementSetOverride multiplayerId installCheckOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\") {{ items {{ name originOfferId baseItem {{ title }} gameSlug}}}}}}".format(
+        u2 = "{}?query=query {{legacyOffers(offerIds: [\"{}\"], locale: \"en\") {{ offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\") {{ items {{ name originOfferId baseItem {{ title }} gameSlug}}}}}}".format(
                 self._get_api_host(),
                 offer_id,
                 offer_id
@@ -344,7 +359,6 @@ class OriginBackendClient:
             logger.exception("Can not parse backend response: %s", await response.text())
             raise UnknownBackendResponse()
 
-    # Doesn't seem to exist as-is in EA Desktop, does appear in an endpoint response. Might be subject to subsequent rework.
     async def get_lastplayed_games(self, game_slugs) -> Dict[GameSlug, Timestamp]:
         url = "{}?query=query {{me {{recentGames(gameSlugs:{}){{items {{gameSlug lastSessionEndDate}}}}}}}}".format(
             self._get_api_host(),
@@ -390,116 +404,39 @@ class OriginBackendClient:
             logger.exception("Can not parse backend response: %s", await response.text())
             raise UnknownBackendResponse(e)
 
-    # Doesn't exist in EA Desktop, meant to disappear soon.
-    async def get_favorite_games(self, user_id) -> Set[OfferId]:
-        response = await self._http_client.get("{base_api}/atom/users/{user_id}/privacySettings/FAVORITEGAMES".format(
-            base_api=self._get_origin_host(),
-            user_id=user_id
-        ))
 
-        '''
-        <?xml version="1.0" encoding="UTF-8"?>
-        <privacySettings>
-           <privacySetting>
-              <userId>1008620950926</userId>
-              <category>FAVORITEGAMES</category>
-              <payload>OFB-EAST:48217;OFB-EAST:109552409;DR:119971300</payload>
-           </privacySetting>
-        </privacySettings>
-        '''
-
-        try:
-            content = await response.text()
-            payload_xml = ET.ElementTree(ET.fromstring(content)).find("privacySetting/payload")
-            if payload_xml is None or payload_xml.text is None:
-                # No games tagged, if on object evaluates to false
-                return set()
-
-            favorite_games = set(OfferId(payload_xml.text.split(';')))
-
-            return favorite_games
-        except (ET.ParseError, AttributeError, ValueError):
-            logger.exception("Can not parse backend response: %s", await response.text())
-            raise UnknownBackendResponse()
-
-    # Doesn't exist in EA Desktop, meant to disappear soon.
-    async def get_hidden_games(self, user_id) -> Set[OfferId]:
-        response = await self._http_client.get("{base_api}/atom/users/{user_id}/privacySettings/HIDDENGAMES".format(
-            base_api=self._get_origin_host(),
-            user_id=user_id
-        ))
-
-        '''
-        <?xml version="1.0" encoding="UTF-8"?>
-        <privacySettings>
-           <privacySetting>
-              <userId>1008620950926</userId>
-              <category>HIDDENGAMES</category>
-              <payload>1.0|OFB-EAST:109552409;OFB-EAST:109552409</payload>
-           </privacySetting>
-        </privacySettings>
-        '''
-
-        try:
-            content = await response.text()
-            payload_xml = ET.ElementTree(ET.fromstring(content)).find("privacySetting/payload")
-            if payload_xml is None or payload_xml.text is None:
-                # No games tagged, if on object evaluates to false
-                return set()
-            payload_text = payload_xml.text.replace('1.0|', '')
-            hidden_games = set(OfferId(payload_text.split(';')))
-
-            return hidden_games
-        except (ET.ParseError, AttributeError, ValueError):
-            logger.exception("Can not parse backend response: %s", await response.text())
-            raise UnknownBackendResponse()
-
-    def _get_subscription_status(self, response_data: Dict) -> Optional[str]:
-        try:
-            return response_data['Subscription']['status'].lower() if response_data else None
-        except (ValueError, KeyError) as e:
-            logger.exception("No 'status' key in response", response_data, repr(e))
-            raise UnknownBackendResponse()
-
-    async def _get_active_subscription(self, subscription_uri) -> Optional[SubscriptionDetails]:
+    async def _get_active_subscription(self, sub_json) -> Optional[SubscriptionDetails]:
         def parse_timestamp(timestamp: str) -> Timestamp:
             return Timestamp(
-                int((datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S") - datetime(1970, 1, 1)).total_seconds()))
-
-        response = await self._http_client.get(subscription_uri)
+                int((datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ") - datetime(1970, 1, 1)).total_seconds()))
         try:
-            data = await response.json()
-            sub_status = self._get_subscription_status(data)
-            if data and sub_status == 'enabled':
+            if sub_json and sub_json['status'].startswith('ACTIVE'):
                 return SubscriptionDetails(
-                    tier=data['Subscription']['subscriptionLevel'].lower(),
-                    end_time=parse_timestamp(data['Subscription']['nextBillingDate'])
+                    tier=sub_json['level'].lower(),
+                    end_time=parse_timestamp(sub_json['end'])
                 )
             else:
-                logger.debug(f"Cannot get data from response or subscription status is not 'ENABLED': {data}")
+                logger.debug(f"Subscription status is not 'ACTIVE': {sub_json}")
                 return None
         except (ValueError, KeyError) as e:
-            logger.exception("Can not parse backend response while getting subs details: %s, error %s", await response.text(), repr(e))
+            logger.exception("Quack ! Seems like there's an issue involving subscriptions: %s, error %s", await sub_json.text(), repr(e))
             raise UnknownBackendResponse()
 
-    async def _get_subscription_uris(self, user_id) -> List[str]:
-        url = f"https://gateway.ea.com/proxy/subscription/pids/{user_id}/subscriptionsv2/groups/Origin Membership"
+    async def _get_subscription_uris(self) -> List[str]:
+        url = "{}?query=query{{me{{subscriptions{{offerId recurring start end level status offer{{offerName duration}} platform type statusReasonCode acquisitionMethod}}}}}}".format(self._get_api_host())
         response = await self._http_client.get(url)
         try:
             data = await response.json()
-            return [
-                f"https://gateway.ea.com/proxy/subscription/pids/{user_id}{path}"
-                for path in data.get('subscriptionUri', [])
-            ]
+            return data['data']['me']['subscriptions']
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response while getting subs uri: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()
 
-    async def get_subscriptions(self, user_id) -> List[Subscription]:
+    async def get_subscriptions(self) -> List[Subscription]:
         subs = {'standard': Subscription(subscription_name='EA Play', owned=False),
                 'premium': Subscription(subscription_name='EA Play Pro', owned=False)}
-        for uri in await self._get_subscription_uris(user_id):
-            user_sub = await self._get_active_subscription(uri)
+        for sub in await self._get_subscription_uris():
+            user_sub = await self._get_active_subscription(sub)
             if user_sub:
                 break
         else:

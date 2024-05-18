@@ -1,10 +1,7 @@
-import asyncio
 import json
 import logging
 import os
-import time
 import platform
-import subprocess
 import tempfile
 import winreg
 
@@ -21,7 +18,6 @@ from typing import Iterator, Tuple
 from galaxy.api.errors import FailedParsingManifest
 from galaxy.api.types import LocalGame, LocalGameState
 
-from backend import AuthenticatedHttpClient, OriginBackendClient
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +27,6 @@ class OriginGameState(Flag):
     Installed = 1
     Playable = 2
 
-###
-# CRC for each file begin with E4X$01 (45 34 58 24 30 31).
-# Sneaky EA devs reversed the bytes for each file mentioned in each "map.eacrc" file. So we need to reverse it back.
-# Kudos to Linguin for guiding me into the right path.
-###
 def parse_total_size(filepath) -> int:
     # get folder size
     total_size = 0
@@ -116,46 +107,67 @@ else:
                 logger.exception("Failed to get information for PID=%s" % pid)
 
 
-def launch_decryption_process():
-    if platform.system() == "Windows":
-        is_decrypt_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "is_decryption_galaxy.py")
-        python_path = os.path.join(get_python_path(), "python.exe")
-        if not os.path.exists(python_path):
-            python_path = "python.exe"
-        if os.path.exists(is_decrypt_path):
-            subprocess.check_output("Powershell -Command \"Start-Process \'" + python_path + "\' -ArgumentList \'" + is_decrypt_path + "\' -Verb RunAs\"", shell=True)
-            time.sleep(10)
+def get_install_location(base_key, regkey_path, part):
+    try:
+        with winreg.OpenKey(base_key, regkey_path) as key:
+            install_location, _ = winreg.QueryValueEx(key, part)
+            return install_location
+    except FileNotFoundError:
+        logger.warning(f"Registry key not found: {base_key}\\{regkey_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error accessing registry key {base_key}\\{regkey_path}: {str(e)}")
+        return None
 
-def get_local_games_from_manifests(json_file):
+
+def get_local_games_from_manifests():
     local_games = []
 
-    running_processes = set(exe for _, exe in process_iter() if exe is not None)
+    running_processes = set(exe for _, exe in process_iter() if exe)
 
-    def is_game_running(game_folder_name):
-        return any(game_folder_name in exe for exe in running_processes)
+    def is_game_running(game_exe):
+        return any(game_exe in exe for exe in running_processes)
 
-    with open(json_file) as file:
-        json_file = json.load(file)
+    offer_cache_path = os.path.join(tempfile.gettempdir(), "offer_cache.json")
+    if not os.path.exists(offer_cache_path):
+        logger.error(f"Offer cache file does not exist: {offer_cache_path}")
+        return local_games
 
-    logger.info(f"Opening IS ...")
-    for game in json_file['installInfos']:
-        game_state = OriginGameState.None_
+
+    with open(offer_cache_path, "r") as f:
+        offer_cache = json.load(f)
+
+    for offer_id, game_data in offer_cache.items():
         state = LocalGameState.None_
-        # logging DLCs is unnecessary
-        if 'offerId' in game:
-            if game['softwareId'].startswith("Origin") or game['softwareId'].startswith("OFB") or game['softwareId'].startswith("DR"):
-                if game['executablePath'] != "" and game['detailedState']['installStatus'] == 5:
-                    game_state |= OriginGameState.Installed
-                    game_state |= OriginGameState.Playable
-                    if game['executablePath'] and ".exe" in game['executablePath'] and game_state == OriginGameState.Installed:
-                        game_folder_name = game['executablePath'].split("\\")[-1].split(".")[0]
-                        if is_game_running(game_folder_name):
-                            state |= LocalGameState.Running
-                        else:
-                            state |= LocalGameState.Installed
-                        local_games.append(LocalGame(game['offerId'], state))
-                    else:
-                        local_games.append(LocalGame(game['offerId'], state))
+        if "executePathOverride" in game_data and game_data["executePathOverride"] != "":
+            regkey_full = game_data["executePathOverride"]
+            regkey_path, part = regkey_full.split(']')
+            game_name = regkey_full.split(']')[1].split('\\')[-1]
+            regkey_path = regkey_path.replace('[', '')
+            regkey_parts = regkey_path.split("\\")
+            if len(regkey_parts) < 2:
+                logger.error(f"Invalid registry key format: {regkey_full}")
+                continue
+
+            hive = getattr(winreg, regkey_parts[0]) # Convert hive to integer
+            regkey_path = "\\".join(regkey_parts[1:-1]) # Join the rest of the path excluding the last part
+            part = regkey_parts[-1] # The last part of the path is the part you want to get the value of
+
+            install_location = get_install_location(hive, regkey_path, part)
+
+            if install_location:
+                logger.info(f"Game file name: {game_name}")
+                logger.debug(f"Install location found: {install_location}")
+                # get last part of the registry now that we have the install location to trigger the last part of the registry
+                if os.path.exists(install_location):
+                    state = LocalGameState.Installed
+                    if is_game_running(game_name):
+                        state = LocalGameState.Installed | LocalGameState.Running
+                local_games.append(LocalGame(offer_id, state))
+            else:
+                local_games.append(LocalGame(offer_id, state))
+        else:
+            local_games.append(LocalGame(offer_id, state))
 
     return local_games
 
@@ -213,16 +225,9 @@ def get_local_content_path():
 class LocalGames:
     def __init__(self):
         try:
-            # verify is IS.json file exists
-            if not os.path.exists(os.path.join(tempfile.gettempdir(), "is.json")):
-                launch_decryption_process()
-            elif not os.path.exists(os.path.join(tempfile.gettempdir(), "is_with_offer.json")):
-                logger.info("Entitlements weren't reached yet. Waiting for the modified JSON file to be created.")
-                self._local_games = []
-            else:
-                self._local_games = get_local_games_from_manifests(os.path.join(tempfile.gettempdir(), "is_with_offer.json"))
+            self._local_games = get_local_games_from_manifests()
         except FailedParsingManifest:
-            logger.warning("Failed to parse manifest. Most likely there's no presence of the IS JSON file.")
+            logger.warning("Failed to parse manifest. Most likely there's no offer cache.")
             self._local_games = []
 
     @property
@@ -234,16 +239,7 @@ class LocalGames:
         returns list of changed games (added, removed, or changed)
         updated local_games property
         '''
-        # verify is IS.json file exists
-        if not os.path.exists(os.path.join(tempfile.gettempdir(), "is.json")):
-            launch_decryption_process()
-        elif not os.path.exists(os.path.join(tempfile.gettempdir(), "is_with_offer.json")):
-            logger.info("Entitlements weren't reached yet. Waiting for the modified JSON file to be created.")
-            new_local_games = []
-            self._local_games = []
-        else:
-            new_local_games = get_local_games_from_manifests(os.path.join(tempfile.gettempdir(), "is_with_offer.json"))
-
+        new_local_games = get_local_games_from_manifests()
         notify_list = get_state_changes(self._local_games, new_local_games)
         self._local_games = new_local_games
 

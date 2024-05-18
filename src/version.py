@@ -1,13 +1,14 @@
-__version__ = "0.41.0.1"
+__version__ = "0.42"
 
 __changelog__ = {
     "unreleased":"""""",
     "0.42":
     """
         - Origin -> EA Desktop
-            -> reworked all necessary functions using the new API
-            -> deprecation message on certain functions not used in EA Desktop (still using the Origin API for now)
+            -> reworked all functions using the new API
+            -> removed deprecated functions (not used in EA Desktop)
             -> rewrote file size discovery function (folder size)
+            -> rewrote local game discovery and status (no need of IS file decryption)
     """,
     "0.41.1":
     """
