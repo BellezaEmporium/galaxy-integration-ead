@@ -22,7 +22,7 @@ from galaxy.api.types import LocalGame, LocalGameState
 logger = logging.getLogger(__name__)
 
 
-class OriginGameState(Flag):
+class EAGameState(Flag):
     None_ = 0
     Installed = 1
     Playable = 2

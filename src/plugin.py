@@ -23,7 +23,7 @@ from galaxy.api.types import (
     NextStep, Subscription, SubscriptionGame
 )
 
-from backend import AuthenticatedHttpClient, MasterTitleId, OfferId, OriginBackendClient, Timestamp, AchievementSet, Json
+from backend import AuthenticatedHttpClient, MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
 from local_games import LocalGames, parse_total_size
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
@@ -72,7 +72,7 @@ class GameLibrarySettingsContext(NamedTuple):
     hidden: Set[OfferId]
 
 
-class OriginPlugin(Plugin):
+class EAPlugin(Plugin):
     def __init__(self, reader, writer, token):
         super().__init__(Platform.Origin, __version__, reader, writer, token)
         self._user_id = None
@@ -84,7 +84,7 @@ class OriginPlugin(Plugin):
         self._http_client = AuthenticatedHttpClient()
         self._http_client.set_auth_lost_callback(auth_lost)
         self._http_client.set_cookies_updated_callback(self._update_stored_cookies)
-        self._backend_client = OriginBackendClient(self._http_client)
+        self._backend_client = EABackendClient(self._http_client)
         self._persistent_cache_updated = False
 
         self._local_games = LocalGames()
@@ -308,7 +308,7 @@ class OriginPlugin(Plugin):
     async def prepare_game_times_context(self, game_ids: List[GameId]) -> Any:
         self._check_authenticated()
         offer_ids = [self._offer_id_from_game_id(game_id) for game_id in game_ids]
-        game_slugs = [GameSlug(self._offer_id_cache[offer_id]["gameSlug"]) for offer_id in offer_ids if "gameSlug" in self._offer_id_cache[offer_id]]
+        game_slugs = [GameSlug(self._offer_id_cache[offer_id]["gameSlug"]) for offer_id in offer_ids if offer_id in self._offer_id_cache and "gameSlug" in self._offer_id_cache[offer_id]]
 
         _, last_played_games = await asyncio.gather(
             self._get_offers(offer_ids),  # update local cache ignoring return value
@@ -541,7 +541,7 @@ class OriginPlugin(Plugin):
         self.push_cache()
 
 def main():
-    create_and_run_plugin(OriginPlugin, sys.argv)
+    create_and_run_plugin(EAPlugin, sys.argv)
 
 
 if __name__ == "__main__":

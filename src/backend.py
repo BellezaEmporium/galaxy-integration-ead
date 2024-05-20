@@ -1,6 +1,5 @@
 import json
 import logging
-import random
 import time
 from collections import namedtuple
 from datetime import datetime
@@ -74,15 +73,12 @@ class AuthenticatedHttpClient(HttpClient):
         try:
             return await self._authorized_get(*args, **kwargs)
         except (AuthenticationRequired, AccessDenied):
-            # Origin backend returns 403 when the auth token expires
             await self._refresh_token()
             return await self._authorized_get(*args, **kwargs)
 
     async def _authorized_get(self, *args, **kwargs):
         headers = kwargs.setdefault("headers", {})
         headers["Authorization"] = "Bearer {}".format(self._access_token)
-        headers["AuthToken"] = self._access_token
-        headers["X-AuthToken"] = self._access_token
 
         return await super().request("GET", *args, **kwargs)
 
@@ -163,7 +159,7 @@ class AuthenticatedHttpClient(HttpClient):
             logger.warning('Failed to get session duration: %s', repr(e))
 
 
-class OriginBackendClient:
+class EABackendClient:
     def __init__(self, http_client):
         self._http_client = http_client
 
@@ -171,14 +167,9 @@ class OriginBackendClient:
     @staticmethod
     def _get_api_host():
         return "https://service-aggregation-layer.juno.ea.com/graphql"
-    
-    # Origin (old) API
-    @staticmethod
-    def _get_origin_host():
-        return "https://api{}.origin.com".format(random.randint(1, 4))
 
     async def get_identity(self) -> Tuple[str, str, str]:
-        url = "{}?query=query{{ me {{ player {{ pd psd displayName }} }} }}".format(self._get_api_host())
+        url = "{}?query=query{{me{{player{{pd psd displayName}}}}}}".format(self._get_api_host())
         pid_response = await self._http_client.get(url)
         data = await pid_response.json()
 
@@ -204,7 +195,7 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
     
     async def get_offer(self, offer_id) -> Json:
-        u2 = "{}?query=query {{legacyOffers(offerIds: [\"{}\"], locale: \"en\") {{ offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\") {{ items {{ name originOfferId baseItem {{ title }} gameSlug}}}}}}".format(
+        u2 = "{}?query=query{{legacyOffers(offerIds: [\"{}\"], locale: \"en\"){{offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\"){{items{{name originOfferId baseItem{{title}} gameSlug}}}}}}".format(
                 self._get_api_host(),
                 offer_id,
                 offer_id
@@ -258,7 +249,7 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
 
     async def get_achievement_set(self, offer_id: OfferId, persona_id: str) -> str:
-        url = "{}?query=query {{achievements(offerId:\"{}\",playerPsd:\"{}\"){{id}}}}".format(self._get_api_host(), offer_id, persona_id)
+        url = "{}?query=query{{achievements(offerId:\"{}\",playerPsd:\"{}\"){{id}}}}".format(self._get_api_host(), offer_id, persona_id)
         response = await self._http_client.get(url)
     
         try:
@@ -274,7 +265,7 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
 
     async def get_game_time(self, game_slug):
-        url = "{}?query=query {{me {{recentGames(gameSlugs:{}){{items {{lastSessionEndDate totalPlayTimeSeconds}}}}}}}}".format(
+        url = "{}?query=query{{me{{recentGames(gameSlugs:{}){{items{{lastSessionEndDate totalPlayTimeSeconds}}}}}}}}".format(
             self._get_api_host(),
             json.dumps(game_slug)
         )
@@ -322,7 +313,7 @@ class OriginBackendClient:
 
     async def get_friends(self):
         response = await self._http_client.get(
-            "{}?query=query{{me {{friends {{items {{player {{pd psd displayName}}}}}}}}}}".format(
+            "{}?query=query{{me{{friends{{items{{player{{pd psd displayName}}}}}}}}}}".format(
                 self._get_api_host()
             )
         )
@@ -358,7 +349,7 @@ class OriginBackendClient:
             raise UnknownBackendResponse()
 
     async def get_lastplayed_games(self, game_slugs) -> Dict[GameSlug, Timestamp]:
-        url = "{}?query=query {{me {{recentGames(gameSlugs:{}){{items {{gameSlug lastSessionEndDate}}}}}}}}".format(
+        url = "{}?query=query{{me{{recentGames(gameSlugs:{}){{items{{gameSlug lastSessionEndDate}}}}}}}}".format(
             self._get_api_host(),
             json.dumps(game_slugs)
         )
@@ -453,20 +444,61 @@ class OriginBackendClient:
         """
             Note: `game_id` of an returned subscription game may not match with `game_id` of the game added to user library!
         """
-        url = f"{self._get_origin_host()}/ecommerce2/vaultInfo/Origin Membership/tiers/{tier}"
-        headers = {
-            "Accept": "application/vnd.origin.v3+json; x-cache/force-write"
-        }
-        response = await self._http_client.get(url, headers=headers)
+        if tier == 'standard':
+            tier = "ORIGIN_ACCESS_BASIC"
+            check = "ea-play"
+        elif tier == 'premium':
+            tier = "ORIGIN_ACCESS_PREMIER"
+            check = "ea-play-pro"
+            check2 = "ea-play"
+
+        url = "{}?query=query{{gameSearch(filter:{{gameTypes:[BASE_GAME],productLifecycleFilter:{{lifecycleTypes:[{}]}}}},paging:{{limit:9999}}){{items{{slug}}}}}}".format(self._get_api_host(), tier)
+        response = await self._http_client.get(url)
         try:
-            games = await response.json()
-            subscription_suffix = '@subscription'  # externalType for compatibility with owned games interface
-            return [
-                SubscriptionGame(
-                    game_title=game['displayName'],
-                    game_id=game['offerId'] + subscription_suffix
-                ) for game in games['game']
-            ]
+            slugs = await response.json()
+            slugs = [game['slug'] for game in slugs['data']['gameSearch']['items']]
+            # we'll only get slugs, now get entitlement data
+            subscription_games = []  # Create an empty list to accumulate the subscription games
+            url2 = "{}?query=query{{games(slugs:{}){{items{{slug products{{items{{id name originOfferId}}}}}}}}}}".format(
+                self._get_api_host(),
+                json.dumps(slugs)
+            )
+            res2 = await self._http_client.get(url2.replace(' ', '%20').replace('+', '%20'))
+            try:
+                games = await res2.json()
+                # verify product info, and take the correct Origin offer ID (some games have multiple offers)
+                for game in games['data']['games']['items']:
+                    if len(game['products']['items']) == 1:
+                        subscription_games.append(  # Append the subscription game to the list
+                            SubscriptionGame(
+                                game_title=game['products']['items'][0]['name'],
+                                game_id=game['products']['items'][0]['originOfferId'] + '@subscription'
+                            )
+                        )
+                    for product in game['products']['items']:
+                        if tier == "ORIGIN_ACCESS_BASIC":
+                            verif = product['id'].find(check)
+                            if verif != -1:
+                                subscription_games.append(  # Append the subscription game to the list
+                                    SubscriptionGame(
+                                        game_title=product['name'],
+                                        game_id=product['originOfferId'] + '@subscription'
+                                    )
+                                )
+                        elif tier == "ORIGIN_ACCESS_PREMIER":
+                            verif = product['id'].find(check)
+                            verif2 = product['id'].find(check2)
+                            if verif != -1 or verif2 != -1:
+                                subscription_games.append(  # Append the subscription game to the list
+                                    SubscriptionGame(
+                                        game_title=product['name'],
+                                        game_id=product['originOfferId'] + '@subscription'
+                                    )
+                                )
+            except (ValueError, KeyError) as e:
+                logger.exception("Can not parse backend response while getting subs games: %s, error %s", await res2.text(), repr(e))
+                raise UnknownBackendResponse()
+            return subscription_games  # Return the list of subscription games
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response while getting subs games: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()

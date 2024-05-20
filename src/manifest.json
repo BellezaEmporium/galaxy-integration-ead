@@ -1,7 +1,7 @@
 {
     "name": "EA",
-    "platform": "ea",
-    "guid": "bb87d06b-b383-4323-89dc-cd6d4d7b6738",
+    "platform": "origin",
+    "guid": "7f53219b-4e2b-4591-9f4f-dfc5f4ba9eb0",
     "version": "0.42",
     "description": "EA Desktop plugin for GOG Galaxy 2.0",
     "author": "Friends of Galaxy, BellezaEmporium, Nutzzz",
