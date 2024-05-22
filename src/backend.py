@@ -195,7 +195,7 @@ class EABackendClient:
             raise UnknownBackendResponse()
     
     async def get_offer(self, offer_id) -> Json:
-        u2 = "{}?query=query{{legacyOffers(offerIds: [\"{}\"], locale: \"en\"){{offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\"){{items{{name originOfferId baseItem{{title}} gameSlug}}}}}}".format(
+        u2 = "{}?query=query{{legacyOffers(offerIds: [\"{}\"], locale: \"en\"){{offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId installCheckOverride executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\"){{items{{name originOfferId baseItem{{title}} gameSlug}}}}}}".format(
                 self._get_api_host(),
                 offer_id,
                 offer_id
@@ -441,9 +441,6 @@ class EABackendClient:
         return [subs['standard'], subs['premium']]
 
     async def get_games_in_subscription(self, tier) -> List[SubscriptionGame]:
-        """
-            Note: `game_id` of an returned subscription game may not match with `game_id` of the game added to user library!
-        """
         if tier == 'standard':
             tier = "ORIGIN_ACCESS_BASIC"
             check = "ea-play"
@@ -469,7 +466,7 @@ class EABackendClient:
                 # verify product info, and take the correct Origin offer ID (some games have multiple offers)
                 for game in games['data']['games']['items']:
                     if len(game['products']['items']) == 1:
-                        subscription_games.append(  # Append the subscription game to the list
+                        subscription_games.append(
                             SubscriptionGame(
                                 game_title=game['products']['items'][0]['name'],
                                 game_id=game['products']['items'][0]['originOfferId'] + '@subscription'
@@ -479,7 +476,7 @@ class EABackendClient:
                         if tier == "ORIGIN_ACCESS_BASIC":
                             verif = product['id'].find(check)
                             if verif != -1:
-                                subscription_games.append(  # Append the subscription game to the list
+                                subscription_games.append(
                                     SubscriptionGame(
                                         game_title=product['name'],
                                         game_id=product['originOfferId'] + '@subscription'
@@ -489,7 +486,7 @@ class EABackendClient:
                             verif = product['id'].find(check)
                             verif2 = product['id'].find(check2)
                             if verif != -1 or verif2 != -1:
-                                subscription_games.append(  # Append the subscription game to the list
+                                subscription_games.append(
                                     SubscriptionGame(
                                         game_title=product['name'],
                                         game_id=product['originOfferId'] + '@subscription'

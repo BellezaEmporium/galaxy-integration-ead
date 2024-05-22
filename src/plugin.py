@@ -24,7 +24,7 @@ from galaxy.api.types import (
 )
 
 from backend import AuthenticatedHttpClient, MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
-from local_games import LocalGames, parse_total_size
+from local_games import LocalGames, get_install_location, parse_total_size
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
 import re
@@ -464,11 +464,16 @@ class EAPlugin(Plugin):
         game_id_crc_map: Dict[GameId, str] = {}
         for game_id in game_ids: 
             game = self._offer_id_cache.get(self._offer_id_from_game_id(game_id))
-            if "executePathOverride" in game:
+            regkey_full = None
+            if "installCheckOverride" in game and game["installCheckOverride"] != "" and game["installCheckOverride"].endswith(".exe"):
+                regkey_full = game["installCheckOverride"]
+            elif "executePathOverride" in game and game["executePathOverride"] != "" and game["executePathOverride"].endswith(".exe"):
                 regkey_full = game["executePathOverride"]
-                regkey_path, part = regkey_full.split(']')
-                regkey_path = regkey_path.replace('[', '')
 
+            if regkey_full:
+                regkey_path, part = regkey_full.split(']')
+                game_name = regkey_full.split(']')[1].split('\\')[-1]
+                regkey_path = regkey_path.replace('[', '')
                 regkey_parts = regkey_path.split("\\")
                 if len(regkey_parts) < 2:
                     logger.error(f"Invalid registry key format: {regkey_full}")
@@ -478,16 +483,17 @@ class EAPlugin(Plugin):
                 regkey_path = "\\".join(regkey_parts[1:-1]) # Join the rest of the path excluding the last part
                 part = regkey_parts[-1] # The last part of the path is the part you want to get the value of
 
-                with winreg.OpenKey(hive, regkey_path) as key:
-                    install_location, _ = winreg.QueryValueEx(key, part)
+                install_location = get_install_location(hive, regkey_path, part)
 
                 if install_location:
+                    logger.info(f"Game file name: {game_name}")
+                    logger.debug(f"Install location found: {install_location}")
                     if os.path.exists(install_location):
                         game_id_crc_map[game_id] = pathlib.Path(install_location)
                     else:
                         game_id_crc_map[game_id] = None
-                else:
-                    game_id_crc_map[game_id] = None
+            else:
+                game_id_crc_map[game_id] = None
         return game_id_crc_map
 
     async def get_local_size(self, game_id: GameId, context: Dict[str, pathlib.PurePath]) -> Optional[int]:

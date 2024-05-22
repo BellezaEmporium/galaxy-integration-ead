@@ -113,7 +113,6 @@ def get_install_location(base_key, regkey_path, part):
             install_location, _ = winreg.QueryValueEx(key, part)
             return install_location
     except FileNotFoundError:
-        logger.warning(f"Registry key not found: {base_key}\\{regkey_path}")
         return None
     except Exception as e:
         logger.error(f"Error accessing registry key {base_key}\\{regkey_path}: {str(e)}")
@@ -139,8 +138,13 @@ def get_local_games_from_manifests():
 
     for offer_id, game_data in offer_cache.items():
         state = LocalGameState.None_
-        if "executePathOverride" in game_data and game_data["executePathOverride"] != "":
+        regkey_full = None
+        if "installCheckOverride" in game_data and game_data["installCheckOverride"] != "" and game_data["installCheckOverride"].endswith(".exe"):
+            regkey_full = game_data["installCheckOverride"]
+        elif "executePathOverride" in game_data and game_data["executePathOverride"] != "" and game_data["executePathOverride"].endswith(".exe"):
             regkey_full = game_data["executePathOverride"]
+
+        if regkey_full:
             regkey_path, part = regkey_full.split(']')
             game_name = regkey_full.split(']')[1].split('\\')[-1]
             regkey_path = regkey_path.replace('[', '')
@@ -156,8 +160,6 @@ def get_local_games_from_manifests():
             install_location = get_install_location(hive, regkey_path, part)
 
             if install_location:
-                logger.info(f"Game file name: {game_name}")
-                logger.debug(f"Install location found: {install_location}")
                 # get last part of the registry now that we have the install location to trigger the last part of the registry
                 if os.path.exists(install_location):
                     state = LocalGameState.Installed

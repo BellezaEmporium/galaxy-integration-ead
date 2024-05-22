@@ -3,7 +3,7 @@ import pytest
 from galaxy.api.types import SubscriptionGame, Subscription
 from galaxy.api.errors import AuthenticationRequired, BackendError
 
-from backend import OriginBackendClient
+from backend import EABackendClient
 
 
 SUBSCRIPTION_OWNED_ID = "EA Play Pro"
@@ -202,7 +202,7 @@ SUBSCRIPTION_GAMES = [
 async def test_backend_client_subscription_games(http_client, create_json_response):
     http_client.get.return_value = create_json_response(SUBSCRIPTION_GAMES_BACKEND_RESPONSE)
     tier = Mock(str)
-    assert SUBSCRIPTION_GAMES == await OriginBackendClient(http_client).get_games_in_subscription(tier)
+    assert SUBSCRIPTION_GAMES == await EABackendClient(http_client).get_games_in_subscription(tier)
 
 
 @pytest.mark.asyncio
