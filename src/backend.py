@@ -211,7 +211,7 @@ class EABackendClient:
         
 
     async def get_achievements(self, offer: OfferId, persona: str) -> Dict[str, List[Achievement]]:
-        url = "{}?operationName=ownedGameAchievements&variables={{\"offerId\":\"{}\",\"playerPsd\":\"{}\",\"locale\":\"en\",\"showHidden\":true}}&extensions={{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"aaf7932f6324d96ea026751365825bb4605776ed6023f29cb1e620477691b727\"}}}}".format(
+        url = "{}?query=query{{achievements(offerId:\"{}\",playerPsd:\"{}\",showHidden:true){{id achievements{{id name awardCount date}}}}}}".format(
             self._get_api_host(),
             str(offer),
             str(persona)
@@ -222,8 +222,7 @@ class EABackendClient:
             try:
                 for achievement in json_data["achievements"]:
                     if achievement["awardCount"] == 1:
-                        date_str = achievement["date"]
-                        date_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+                        date_obj = datetime.strptime(achievement["date"], "%Y-%m-%dT%H:%M:%S.%fZ")
                         unix_timestamp = int(date_obj.timestamp())
                         achievement_data = Achievement(
                             achievement_id=achievement["id"],

@@ -216,12 +216,11 @@ class EAPlugin(Plugin):
                     continue
                 if offer[0] and offer[1]:
                     # Prevent having multiple entries without any sense.
-                    if "mdmTitleIds" in offer[0] and offer[0]["mdmTitleIds"][0] == offer[0]["primaryMasterTitleId"]:
-                        if "executePathOverride" in offer[0] and offer[0]["executePathOverride"] != "":
-                            offer_id = offer[1]["originOfferId"]
-                            offer[0]["gameSlug"] = offer[1]["gameSlug"]
-                            offers[offer_id] = offer[0]
-                            self._offer_id_cache[offer_id] = offer[0]
+                    if "executePathOverride" in offer[0] and offer[0]["executePathOverride"] != "":
+                        offer_id = offer[1]["originOfferId"]
+                        offer[0]["gameSlug"] = offer[1]["gameSlug"]
+                        offers[offer_id] = offer[0]
+                        self._offer_id_cache[offer_id] = offer[0]
                 else:
                     logger.warning(f"Data for {offer} not found.")
                     continue
