@@ -4,6 +4,10 @@ Allows to import your list of games, achievements and time played.
 
 Forked from FriendsOfGalaxy.
 
+# Information
+
+You are currently on the "master" branch, which contains the essential fixes in order to get your games back. However, subsidiary things such as achievements, game play time and available subscription games might be outdated.
+
 ## Disclaimer
 
 Please note that, in order to make this plugin fully functional, you need to have a valid EA Desktop account.
