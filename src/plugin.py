@@ -311,10 +311,6 @@ class EAPlugin(Plugin):
         basegame_entitlements = [x for x in entitlement_data if x["product"] is not None and x["product"]["baseItem"]["gameType"] == "BASE_GAME"]
         basegame_offers = await self._get_offers([x["originOfferId"] for x in basegame_entitlements])
 
-        # dump the offers into a json file, for local games
-        with open(os.path.join(tempfile.gettempdir(), "offer_cache.json"), "w") as file:
-            json.dump(basegame_offers, file, indent=4)
-
         return {
             get_game_id(ent): basegame_offers[ent["originOfferId"]]
             for ent in basegame_entitlements
