@@ -1,5 +1,4 @@
 import asyncio
-from enum import Flag
 import os
 import pathlib
 import json
@@ -16,16 +15,16 @@ import winreg
 
 from galaxy.api.consts import LicenseType, Platform
 from galaxy.api.errors import (
-    AccessDenied, AuthenticationRequired, BackendError, InvalidCredentials, UnknownBackendResponse, UnknownError, FailedParsingManifest
+    AccessDenied, AuthenticationRequired, BackendError, InvalidCredentials, UnknownBackendResponse, UnknownError
 )
 from galaxy.api.plugin import create_and_run_plugin, Plugin
 from galaxy.api.types import (
-    Achievement, Authentication, FriendInfo, Game, GameTime, LicenseInfo, LocalGame,
-    NextStep, Subscription, SubscriptionGame, LocalGame, LocalGameState
+    Achievement, Authentication, FriendInfo, Game, GameTime, LicenseInfo, LocalGame, LocalGameState,
+    NextStep, Subscription, SubscriptionGame
 )
 
 from backend import AuthenticatedHttpClient, MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
-from lgames_manifests import get_install_location, process_iter
+from lgames_manifests import get_install_location, get_state_changes, parse_total_size, process_iter
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
 import re
@@ -33,77 +32,8 @@ import re
 
 logger = logging.getLogger(__name__)
 
-
 def is_windows():
     return platform.system().lower() == "windows"
-
-
-class EAGameState(Flag):
-    None_ = 0
-    Installed = 1
-    Playable = 2
-
-def parse_total_size(filepath) -> int:
-    # get folder size
-    total_size = 0
-    if filepath is not None:
-        for dirpath, _, filenames in os.walk(filepath):
-            for f in filenames:
-                fp = os.path.join(dirpath, f)
-                total_size += os.path.getsize(fp)
-    return total_size
-
-
-def get_state_changes(old_list, new_list):
-    old_dict = {x.game_id: x.local_game_state for x in old_list}
-    new_dict = {x.game_id: x.local_game_state for x in new_list}
-    result = []
-    # removed games
-    result.extend(LocalGame(game_id, LocalGameState.None_) for game_id in old_dict.keys() - new_dict.keys())
-    # added games
-    result.extend(local_game for local_game in new_list if local_game.game_id in new_dict.keys() - old_dict.keys())
-    # state changed
-    result.extend(
-        LocalGame(game_id, new_dict[game_id])
-        for game_id in new_dict.keys() & old_dict.keys()
-        if new_dict[game_id] != old_dict[game_id]
-    )
-    return result
-
-
-def get_python_path():
-    platform_id = platform.system()
-    python_path = ""
-    if platform_id == "Windows":
-        reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
-
-        keyname = winreg.OpenKey(reg, r'SOFTWARE\WOW6432Node\GOG.com\GalaxyClient\paths')
-        for i in range(1024):
-            try:
-                valname = winreg.EnumKey(keyname, i)
-                open_key = winreg.OpenKey(keyname, valname)
-                python_path = winreg.QueryValueEx(open_key, "client")
-            except EnvironmentError:
-                break
-    else:
-        python_path = ""  # fallback for testing on another platform
-        # raise NotImplementedError("Not implemented on {}".format(platform_id))
-
-    return python_path
-
-
-def get_local_content_path():
-    platform_id = platform.system()
-    if platform_id == "Windows":
-        local_content_path = os.path.join(os.environ.get("ProgramData", os.environ.get("SystemDrive", "C:") + R"\ProgramData"), "EA Desktop", "InstallData")
-    elif platform_id == "Darwin":
-        local_content_path = os.path.join(os.sep, "Library", "Application Support", "EA Desktop", "InstallData")
-    else:
-        local_content_path = "."  # fallback for testing on another platform
-        # raise NotImplementedError("Not implemented on {}".format(platform_id))
-
-    return local_content_path
-
 
 LOCAL_GAMES_CACHE_VALID_PERIOD = 5
 AUTH_PARAMS = {
@@ -581,12 +511,12 @@ class EAPlugin(Plugin):
             finally:
                 self._local_games_update_in_progress = False
 
-            for local_game_notify in notify_list:
-                self._local_game_status(local_game_notify)
+            for local_games_notify in notify_list:
+                self.update_local_game_status(local_games_notify)
 
         # don't overlap update operations
         if self._local_games_update_in_progress:
-            logger.debug("LocalGames.update in progress, skipping cache update")
+            logger.debug("Local games are being updated, skipping cache update")
             return
 
         if time.time() - self._local_games_last_update < LOCAL_GAMES_CACHE_VALID_PERIOD:
@@ -600,11 +530,18 @@ class EAPlugin(Plugin):
         game_id_crc_map: Dict[GameId, str] = {}
         for game_id in game_ids: 
             game = self._offer_id_cache.get(self._offer_id_from_game_id(game_id))
-            regkey_full = None
-            if "installCheckOverride" in game and game["installCheckOverride"] != "" and game["installCheckOverride"].endswith(".exe"):
+            if ("installCheckOverride" in game and 
+                game["installCheckOverride"] is not None and 
+                game["installCheckOverride"] != "" and 
+                game["installCheckOverride"].endswith(".exe")):
                 regkey_full = game["installCheckOverride"]
-            elif "executePathOverride" in game and game["executePathOverride"] != "" and game["executePathOverride"].endswith(".exe"):
+            elif ("executePathOverride" in game and 
+                game["executePathOverride"] is not None and 
+                game["executePathOverride"] != "" and 
+                game["executePathOverride"].endswith(".exe")):
                 regkey_full = game["executePathOverride"]
+            else:
+                regkey_full = None
 
             if regkey_full:
                 regkey_path, part = regkey_full.split(']')
