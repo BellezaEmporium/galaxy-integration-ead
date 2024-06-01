@@ -1,4 +1,5 @@
 import asyncio
+from enum import Flag
 import os
 import pathlib
 import json
@@ -15,16 +16,16 @@ import winreg
 
 from galaxy.api.consts import LicenseType, Platform
 from galaxy.api.errors import (
-    AccessDenied, AuthenticationRequired, BackendError, InvalidCredentials, UnknownBackendResponse, UnknownError
+    AccessDenied, AuthenticationRequired, BackendError, InvalidCredentials, UnknownBackendResponse, UnknownError, FailedParsingManifest
 )
 from galaxy.api.plugin import create_and_run_plugin, Plugin
 from galaxy.api.types import (
     Achievement, Authentication, FriendInfo, Game, GameTime, LicenseInfo, LocalGame,
-    NextStep, Subscription, SubscriptionGame
+    NextStep, Subscription, SubscriptionGame, LocalGame, LocalGameState
 )
 
 from backend import AuthenticatedHttpClient, MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
-from local_games import LocalGames, get_install_location, parse_total_size
+from lgames_manifests import get_install_location, process_iter
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
 import re
@@ -35,6 +36,73 @@ logger = logging.getLogger(__name__)
 
 def is_windows():
     return platform.system().lower() == "windows"
+
+
+class EAGameState(Flag):
+    None_ = 0
+    Installed = 1
+    Playable = 2
+
+def parse_total_size(filepath) -> int:
+    # get folder size
+    total_size = 0
+    if filepath is not None:
+        for dirpath, _, filenames in os.walk(filepath):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                total_size += os.path.getsize(fp)
+    return total_size
+
+
+def get_state_changes(old_list, new_list):
+    old_dict = {x.game_id: x.local_game_state for x in old_list}
+    new_dict = {x.game_id: x.local_game_state for x in new_list}
+    result = []
+    # removed games
+    result.extend(LocalGame(game_id, LocalGameState.None_) for game_id in old_dict.keys() - new_dict.keys())
+    # added games
+    result.extend(local_game for local_game in new_list if local_game.game_id in new_dict.keys() - old_dict.keys())
+    # state changed
+    result.extend(
+        LocalGame(game_id, new_dict[game_id])
+        for game_id in new_dict.keys() & old_dict.keys()
+        if new_dict[game_id] != old_dict[game_id]
+    )
+    return result
+
+
+def get_python_path():
+    platform_id = platform.system()
+    python_path = ""
+    if platform_id == "Windows":
+        reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
+
+        keyname = winreg.OpenKey(reg, r'SOFTWARE\WOW6432Node\GOG.com\GalaxyClient\paths')
+        for i in range(1024):
+            try:
+                valname = winreg.EnumKey(keyname, i)
+                open_key = winreg.OpenKey(keyname, valname)
+                python_path = winreg.QueryValueEx(open_key, "client")
+            except EnvironmentError:
+                break
+    else:
+        python_path = ""  # fallback for testing on another platform
+        # raise NotImplementedError("Not implemented on {}".format(platform_id))
+
+    return python_path
+
+
+def get_local_content_path():
+    platform_id = platform.system()
+    if platform_id == "Windows":
+        local_content_path = os.path.join(os.environ.get("ProgramData", os.environ.get("SystemDrive", "C:") + R"\ProgramData"), "EA Desktop", "InstallData")
+    elif platform_id == "Darwin":
+        local_content_path = os.path.join(os.sep, "Library", "Application Support", "EA Desktop", "InstallData")
+    else:
+        local_content_path = "."  # fallback for testing on another platform
+        # raise NotImplementedError("Not implemented on {}".format(platform_id))
+
+    return local_content_path
 
 
 LOCAL_GAMES_CACHE_VALID_PERIOD = 5
@@ -87,7 +155,7 @@ class EAPlugin(Plugin):
         self._backend_client = EABackendClient(self._http_client)
         self._persistent_cache_updated = False
 
-        self._local_games = LocalGames()
+        self._local_games = {}
         self._local_games_last_update = 0
         self._local_games_update_in_progress = False
 
@@ -98,6 +166,75 @@ class EAPlugin(Plugin):
     @property
     def _offer_id_cache(self) -> Dict[OfferId, Json]:
         return self.persistent_cache.setdefault("offers", {})
+    
+    
+    def _update_local_games(self):
+        local_games = []
+
+        running_processes = set(exe for _, exe in process_iter() if exe)
+
+        def is_game_running(game_exe):
+            return any(game_exe in exe for exe in running_processes)
+
+        if self._offer_id_cache is None:
+            self._get_owned_offers()
+
+        for offer_id, game_data in self._offer_id_cache.items():
+            state = LocalGameState.None_
+            regkey_full = None
+            if ("installCheckOverride" in game_data and 
+                game_data["installCheckOverride"] is not None and 
+                game_data["installCheckOverride"] != "" and 
+                game_data["installCheckOverride"].endswith(".exe")):
+                regkey_full = game_data["installCheckOverride"]
+            elif ("executePathOverride" in game_data and 
+                game_data["executePathOverride"] is not None and 
+                game_data["executePathOverride"] != "" and 
+                game_data["executePathOverride"].endswith(".exe")):
+                regkey_full = game_data["executePathOverride"]
+            else:
+                regkey_full = None
+
+            if regkey_full:
+                regkey_path, part = regkey_full.split(']')
+                game_name = regkey_full.split(']')[1].split('\\')[-1]
+                regkey_path = regkey_path.replace('[', '')
+                regkey_parts = regkey_path.split("\\")
+                if len(regkey_parts) < 2:
+                    logger.error(f"Invalid registry key format: {regkey_full}")
+                    continue
+
+                hive = getattr(winreg, regkey_parts[0]) # Convert hive to integer
+                regkey_path = "\\".join(regkey_parts[1:-1]) # Join the rest of the path excluding the last part
+                part = regkey_parts[-1] # The last part of the path is the part you want to get the value of
+
+                install_location = get_install_location(hive, regkey_path, part)
+
+                if install_location:
+                    # get last part of the registry now that we have the install location to trigger the last part of the registry
+                    if os.path.exists(install_location):
+                        state = LocalGameState.Installed
+                        if is_game_running(game_name):
+                            state = LocalGameState.Installed | LocalGameState.Running
+                    local_games.append(LocalGame(offer_id, state))
+                else:
+                    local_games.append(LocalGame(offer_id, state))
+            else:
+                local_games.append(LocalGame(offer_id, state))
+
+        return local_games
+    
+    def _local_game_status(self):
+        '''
+        returns list of changed games (added, removed, or changed)
+        updated local_games property
+        '''
+        new_local_games = self._update_local_games()
+        notify_list = get_state_changes(self._local_games, new_local_games)
+        self._local_games = new_local_games
+
+        return self._local_games, notify_list
+        
 
     async def shutdown(self):
         await self._http_client.close()
@@ -422,13 +559,13 @@ class EAPlugin(Plugin):
 
     async def get_local_games(self) -> List[LocalGame]:
         if self._local_games_update_in_progress:
-            logger.debug("LocalGames.update in progress, returning cached values")
+            logger.debug("Local games are being updated, returning cached values")
             return self._local_games.local_games
 
         loop = asyncio.get_running_loop()
         try:
             self._local_games_update_in_progress = True
-            local_games, _ = await loop.run_in_executor(None, partial(LocalGames.update, self._local_games))
+            local_games, _ = await loop.run_in_executor(None, partial(self._local_game_status))
             self._local_games_last_update = time.time()
         finally:
             self._local_games_update_in_progress = False
@@ -439,13 +576,13 @@ class EAPlugin(Plugin):
             notify_list = []
             try:
                 self._local_games_update_in_progress = True
-                _, notify_list = await loop.run_in_executor(None, partial(LocalGames.update, self._local_games))
+                _, notify_list = await loop.run_in_executor(None, partial(self._local_game_status))
                 self._local_games_last_update = time.time()
             finally:
                 self._local_games_update_in_progress = False
 
             for local_game_notify in notify_list:
-                self.update_local_game_status(local_game_notify)
+                self._local_game_status(local_game_notify)
 
         # don't overlap update operations
         if self._local_games_update_in_progress:
