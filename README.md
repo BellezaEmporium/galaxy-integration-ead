@@ -7,6 +7,9 @@ Forked from FriendsOfGalaxy.
 ## Disclaimer
 
 Please note that, in order to make this plugin fully functional, you need to have a valid EA Desktop account.
+
+## Disclaimer 2 - Juno API
+
 As the data vary from the Juno API to the now almost defunct Origin API, some features might be tinkered on further releases to make them work as intended.
 
 ## Installation
@@ -20,7 +23,4 @@ As the data vary from the Juno API to the now almost defunct Origin API, some fe
 
 ## Configuration
 
-1) First time ? Login to your EA Desktop from GOG Galaxy, and enjoy your games. The offer cache file will be created into your temp folder.
-2) Once the first part is done, disconnect and reconnect. It should be now detecting your local games, and letting you install/play them.
-
-I know, this is not optimal, but this is (for now) the only possible way I've found to make this work.
+1) Login to your EA Desktop from GOG Galaxy, and enjoy your games.
