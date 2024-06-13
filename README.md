@@ -21,3 +21,10 @@ As the data vary from the Juno API to the now almost defunct Origin API, some fe
 ## Configuration
 
 1) Login to your EA Desktop from GOG Galaxy, and enjoy your games.
+
+## Kudos
+
+- [@imLinguin](https://github.com/imLinguin) for helping me on the EA login logic & various hints
+- [@Nutzzz](https://github.com/Nutzzz) for describing me the IS file decryption and testing the plugin on various aspects.
+- All the plugin testers
+- The GOG Cafe / Wing of GOG Discord servers
