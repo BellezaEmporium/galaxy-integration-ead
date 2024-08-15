@@ -1,7 +1,14 @@
-__version__ = "0.42"
+__version__ = "0.43"
 
 __changelog__ = {
     "unreleased":"""""",
+    "0.43":
+    """
+        - rewrote the login process to get a long-lasting token, with a token refresh method. Kudos to @imLinguin for the help and information
+        - rewrote the local game discovery and status
+        - split the HTTP Client from the backend onto a separate file
+        - ditch the use of the Galaxy HTTP platform to use aiohttp (per API recommendations v69)
+    """,
     "0.42":
     """
         - Origin -> EA Desktop
