@@ -6,7 +6,6 @@ import logging
 import platform
 import subprocess
 import sys
-import tempfile
 import time
 import webbrowser
 from functools import partial
@@ -23,7 +22,8 @@ from galaxy.api.types import (
     NextStep, Subscription, SubscriptionGame
 )
 
-from backend import AuthenticatedHttpClient, MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
+from backend import MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
+from http_client import AuthenticatedHttpClient
 from lgames_manifests import get_install_location, get_state_changes, parse_total_size, process_iter
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
@@ -177,23 +177,10 @@ class EAPlugin(Plugin):
             logger.exception("Plugin not authenticated")
             raise AuthenticationRequired()
 
-    async def _do_authenticate(self, cookies):
-        try:
-            await self._http_client.authenticate(cookies)
-
-            self._user_id, self._persona_id, user_name = await self._backend_client.get_identity()
-            return Authentication(self._user_id, user_name)
-
-        except (AccessDenied, InvalidCredentials, AuthenticationRequired) as e:
-            logger.exception("Failed to authenticate %s", repr(e))
-            raise InvalidCredentials()
-
     async def authenticate(self, stored_credentials=None):
         stored_cookies = stored_credentials.get("cookies") if stored_credentials else None
-
         if not stored_cookies:
             return NextStep("web_session", AUTH_PARAMS, js=JS)
-
         return await self._do_authenticate(stored_cookies)
 
     async def pass_login_credentials(self, step, credentials, cookies):
@@ -201,6 +188,27 @@ class EAPlugin(Plugin):
         auth_info = await self._do_authenticate(new_cookies)
         self._store_cookies(new_cookies)
         return auth_info
+
+    async def _do_authenticate(self, cookies):
+        try:
+            logger.info("Starting authentication process")
+            await self._http_client.authenticate(cookies)
+            logger.info("HTTP client authenticated")
+            
+            self._access_token, self._refresh_token = await self._http_client._get_access_token()
+            logger.info("Access token obtained")
+            
+            if not self._access_token:
+                logger.error("Access token not set after _get_access_token")
+                raise AccessDenied("No access token obtained")
+            
+            self._user_id, self._persona_id, user_name = await self._backend_client.get_identity()
+            logger.info(f"Identity obtained: user_id={self._user_id}, persona_id={self._persona_id}, user_name={user_name}")
+            
+            return Authentication(self._user_id, user_name)
+        except (AccessDenied, InvalidCredentials, AuthenticationRequired) as e:
+            logger.exception(f"Failed to authenticate: {repr(e)}")
+            raise InvalidCredentials()
 
     @staticmethod
     def _offer_id_from_game_id(game_id: GameId) -> OfferId:

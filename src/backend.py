@@ -1,24 +1,17 @@
 import json
 import logging
-import time
 from collections import namedtuple
 from datetime import datetime
 from typing import Dict, List, NewType, Optional, Any, Tuple
 
-import aiohttp
 from galaxy.api.errors import (
-    AccessDenied, AuthenticationRequired, BackendError, BackendNotAvailable, BackendTimeout, NetworkError,
     UnknownBackendResponse
 )
 from galaxy.api.types import Achievement, SubscriptionGame, Subscription
-from galaxy.http import HttpClient
-from yarl import URL
 from datetime import datetime
-
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
 
 MasterTitleId = NewType("MasterTitleId", str)
 AchievementSet = NewType("AchievementSet", str)
@@ -28,136 +21,6 @@ GameSlug = NewType("GameSlug", str)
 Json = Dict[str, Any]  # helper alias for general purpose
 
 SubscriptionDetails = namedtuple('SubscriptionDetails', ['tier', 'end_time'])
-
-
-class CookieJar(aiohttp.CookieJar):
-    def __init__(self):
-        super().__init__()
-        self._cookies_updated_callback = None
-
-    def set_cookies_updated_callback(self, callback):
-        self._cookies_updated_callback = callback
-
-    def update_cookies(self, cookies, url=URL()):
-        super().update_cookies(cookies, url)
-        if cookies and self._cookies_updated_callback:
-            self._cookies_updated_callback(list(self))
-
-
-class AuthenticatedHttpClient(HttpClient):
-    def __init__(self):
-        self._auth_lost_callback = None
-        self._cookie_jar = CookieJar()
-        self._access_token = None
-        self._last_access_token_success = None
-        self._save_lats_callback = None
-        super().__init__(cookie_jar=self._cookie_jar)
-
-    def set_auth_lost_callback(self, callback):
-        self._auth_lost_callback = callback
-
-    def set_cookies_updated_callback(self, callback):
-        self._cookie_jar.set_cookies_updated_callback(callback)
-
-    async def authenticate(self, cookies):
-        self._cookie_jar.update_cookies(cookies)
-        await self._get_access_token()
-
-    def is_authenticated(self):
-        return self._access_token is not None
-
-    async def get(self, *args, **kwargs):
-        if not self._access_token:
-            raise AccessDenied("No access token")
-
-        try:
-            return await self._authorized_get(*args, **kwargs)
-        except (AuthenticationRequired, AccessDenied):
-            await self._refresh_token()
-            return await self._authorized_get(*args, **kwargs)
-
-    async def _authorized_get(self, *args, **kwargs):
-        headers = kwargs.setdefault("headers", {})
-        headers["Authorization"] = "Bearer {}".format(self._access_token)
-
-        return await super().request("GET", *args, **kwargs)
-
-    async def _refresh_token(self):
-        try:
-            if self._access_token is not None:
-                # diff method, once you have one access_token, you can get another one on refresh.
-                url = "https://accounts.ea.com/connect/auth"
-                params = {
-                    "client_id": "JUNO_PC_CLIENT",
-                    "scope": "signin dp.client.default",
-                    "access_token": self._access_token,
-                }
-                response = await super().request("GET", url, params=params, allow_redirects=False)
-                if "access_token" in response.headers["Location"]:
-                    data = response.headers["Location"]
-                    # should look like qrc:/html/login_successful.html#access_token=
-                    # note that there's some other parameters afterwards, so we need to isolate the variable well
-                    self._access_token = data.split("#")[1].split("=")[1].split("&")[0]
-            else:
-                await self._get_access_token()
-        except (BackendNotAvailable, BackendTimeout, BackendError, NetworkError):
-            logger.warning("Failed to refresh token for independent reasons")
-            raise
-        except Exception:
-            logger.exception("Failed to refresh token")
-            self._access_token = None
-            if self._auth_lost_callback:
-                self._auth_lost_callback()
-            raise AccessDenied("Failed to refresh token")
-
-    async def _get_access_token(self):
-        url = "https://accounts.ea.com/connect/auth"
-        params = {
-            "client_id": "JUNO_PC_CLIENT",
-            "display": "junoWeb/login",
-            "response_type": "token",
-            "redirectUri": "nucleus:rest"
-        }
-        response = await super().request("GET", url, params=params, allow_redirects=False)
-
-        # upd 18.09.2023 : the access_token is in the "Location" header. It's a Bearer token.
-        if "access_token" in response.headers["Location"]:
-            data = response.headers["Location"]
-            # should look like qrc:/html/login_successful.html#access_token=
-            # note that there's some other parameters afterwards, so we need to isolate the variable well
-            self._access_token = data.split("#")[1].split("=")[1].split("&")[0]
-        elif "access_token" not in response.headers["Location"] and "error=login_required" in response.headers["Location"]:
-            self._log_session_details()
-            raise AuthenticationRequired("Error parsing access token. Must reauthenticate.")
-        else:
-            self._save_lats()
-
-    # more logging for auth lost investigation
-
-    def _save_lats(self):
-        if self._save_lats_callback is not None:
-            self._last_access_token_success = int(time.time())
-            self._save_lats_callback(self._last_access_token_success)
-
-    def set_save_lats_callback(self, callback):
-        self._save_lats_callback = callback
-
-    def load_lats_from_cache(self, value: Optional[str]):
-        self._last_access_token_success = int(value) if value else None
-
-    def _log_session_details(self):
-        try:
-            utag_main_cookie = next(filter(lambda c: c.key == 'utag_main', self._cookie_jar))
-            utag_main = {i.split(':')[0]: i.split(':')[1] for i in utag_main_cookie.value.split('$')}
-            logger.info('now: %s st: %s ses_id: %s lats: %s',
-                str(int(time.time())),
-                utag_main['_st'][:10],
-                utag_main['ses_id'][:10],
-                str(self._last_access_token_success)
-            )
-        except Exception as e:
-            logger.warning('Failed to get session duration: %s', repr(e))
-
 
 class EABackendClient:
     def __init__(self, http_client):
@@ -171,24 +34,22 @@ class EABackendClient:
     async def get_identity(self) -> Tuple[str, str, str]:
         url = "{}?query=query{{me{{player{{pd psd displayName}}}}}}".format(self._get_api_host())
         pid_response = await self._http_client.get(url)
-        data = await pid_response.json()
 
         try:
-            user_id = data["data"]["me"]["player"]["pd"]
-            persona_id = data["data"]["me"]["player"]["psd"]
-            user_name = data["data"]["me"]["player"]["displayName"]
+            user_id = pid_response["data"]["me"]["player"]["pd"]
+            persona_id = pid_response["data"]["me"]["player"]["psd"]
+            user_name = pid_response["data"]["me"]["player"]["displayName"]
 
             return str(user_id), str(persona_id), str(user_name)
         except (AttributeError, KeyError) as e:
-            logger.exception("Can not parse backend response: %s, error %s", data, repr(e))
+            logger.exception("Can not parse backend response: %s, error %s", pid_response, repr(e))
             raise UnknownBackendResponse()
 
     async def get_entitlements(self) -> List[Json]:
         # Step 1 = get all Origin product IDs
         u1 = "{}?query=query{{me{{ownedGameProducts(locale:\"en\" entitlementEnabled:true storefronts:[EA,STEAM,EPIC] type:[DIGITAL_FULL_GAME,PACKAGED_FULL_GAME] platforms:[PC] paging:{{limit:9999}}){{items{{originOfferId product{{gameSlug baseItem {{gameType}} gameProductUser{{ownershipMethods entitlementId}}}}}}}}}}}}".format(self._get_api_host())
-        r1 = await self._http_client.get(u1)
+        d1 = await self._http_client.get(u1)
         try:
-            d1 = await r1.json()
             return d1['data']['me']['ownedGameProducts']['items']
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response: %s, error %s", await d1.text(), repr(e))
@@ -203,8 +64,7 @@ class EABackendClient:
         u2 = u2.replace(' ', '%20').replace('+', '%20')
         response = await self._http_client.get(u2)
         try:
-            r2 = await response.json()
-            return r2['data']['legacyOffers'][0], r2['data']['gameProducts']['items'][0]
+            return response['data']['legacyOffers'][0], response['data']['gameProducts']['items'][0]
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()
@@ -236,9 +96,8 @@ class EABackendClient:
             return achievements
 
         try:
-            json = await response.json()
             achievement_sets = {}
-            for achievement_set in json["data"]["achievements"]:
+            for achievement_set in response["data"]["achievements"]:
                 achievements = parser(achievement_set)
                 achievement_sets[achievement_set["id"]] = achievements
             return achievement_sets
@@ -252,8 +111,7 @@ class EABackendClient:
         response = await self._http_client.get(url)
     
         try:
-            json = await response.json()
-            achievements = json["data"]["achievements"]
+            achievements = response["data"]["achievements"]
             if achievements:
                 return achievements[0]["id"] if "id" in achievements[0] else None
             else:
@@ -288,6 +146,7 @@ class EABackendClient:
             }
         }
         """
+
         try:
             def parse_last_played_time(lastplayed_timestamp) -> Optional[int]:
                 try:
@@ -297,13 +156,12 @@ class EABackendClient:
                         
                 return int(time_delta.total_seconds())
 
-            content = await response.json()
             # assuming this is just EA's way of saying we never played a game.
-            if not content['data']['me']['recentGames']['items']:
+            if not response['data']['me']['recentGames']['items']:
                 return 0, None
             else:
-                total_play_time = round(int(content['data']['me']['recentGames']['items'][0]['totalPlayTimeSeconds']) / 60)  # response is in seconds
-                last_played_time = parse_last_played_time(content['data']['me']['recentGames']['items'][0]['lastSessionEndDate'])
+                total_play_time = round(int(response['data']['me']['recentGames']['items'][0]['totalPlayTimeSeconds']) / 60)  # response is in seconds
+                last_played_time = parse_last_played_time(response['data']['me']['recentGames']['items'][0]['lastSessionEndDate'])
 
             return total_play_time, last_played_time
         except (AttributeError, ValueError, KeyError) as e:
@@ -338,10 +196,9 @@ class EABackendClient:
         """
 
         try:
-            content = await response.json()
             return {
                 user_json['player']['pd']: user_json["player"]["displayName"]
-                for user_json in content["data"]["me"]["friends"]["items"]
+                for user_json in response["data"]["me"]["friends"]["items"]
             }
         except (AttributeError, KeyError):
             logger.exception("Can not parse backend response: %s", await response.text())
@@ -382,8 +239,7 @@ class EABackendClient:
 
 
         try:
-            content = await response.json()
-            games = content["data"]["me"]["recentGames"]["items"]
+            games = response["data"]["me"]["recentGames"]["items"]
             return {
                 game["gameSlug"]: parse_last_session_end_date(game["lastSessionEndDate"])
                 for game in games
@@ -414,8 +270,7 @@ class EABackendClient:
         url = "{}?query=query{{me{{subscriptions{{offerId recurring start end level status offer{{offerName duration}} platform type statusReasonCode acquisitionMethod}}}}}}".format(self._get_api_host())
         response = await self._http_client.get(url)
         try:
-            data = await response.json()
-            return data['data']['me']['subscriptions']
+            return response['data']['me']['subscriptions']
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response while getting subs uri: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()
@@ -451,17 +306,15 @@ class EABackendClient:
         url = "{}?query=query{{gameSearch(filter:{{gameTypes:[BASE_GAME],productLifecycleFilter:{{lifecycleTypes:[{}]}}}},paging:{{limit:9999}}){{items{{slug}}}}}}".format(self._get_api_host(), tier)
         response = await self._http_client.get(url)
         try:
-            slugs = await response.json()
-            slugs = [game['slug'] for game in slugs['data']['gameSearch']['items']]
+            slugs = [game['slug'] for game in response['data']['gameSearch']['items']]
             # we'll only get slugs, now get entitlement data
             subscription_games = []  # Create an empty list to accumulate the subscription games
             url2 = "{}?query=query{{games(slugs:{}){{items{{slug products{{items{{id name originOfferId}}}}}}}}}}".format(
                 self._get_api_host(),
                 json.dumps(slugs)
             )
-            res2 = await self._http_client.get(url2.replace(' ', '%20').replace('+', '%20'))
+            games = await self._http_client.get(url2.replace(' ', '%20').replace('+', '%20'))
             try:
-                games = await res2.json()
                 # verify product info, and take the correct Origin offer ID (some games have multiple offers)
                 for game in games['data']['games']['items']:
                     if len(game['products']['items']) == 1:
