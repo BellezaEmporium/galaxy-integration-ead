@@ -1,13 +1,21 @@
 # EA Desktop (ead) integration for GOG Galaxy
 
 Allows to import your list of games, achievements and time played.
-
 Forked from FriendsOfGalaxy.
+
+# Information
+
+You are currently on the "juno_api" branch, which is a rewritten version of that same plugin, using the new Juno API for EA Desktop.
+Achievements, game play time and available subscription games should be up to date on this specific version.
 
 ## Disclaimer
 
 Please note that, in order to make this plugin fully functional, you need to have a valid EA Desktop account.
-As the data vary from the Juno API to the now almost defunct Origin API, some features might be tinkered on further releases to make them work as intended.
+Mac users still have Origin, and will be switched to EA Desktop pretty soon.
+
+## Disclaimer 2
+
+While the plugin is proven to work on Windows, I *cannot confirm* that this plugin also works on Mac.
 
 ## Installation
 
@@ -20,7 +28,7 @@ As the data vary from the Juno API to the now almost defunct Origin API, some fe
 
 ## Configuration
 
-1) Login to your EA Desktop from GOG Galaxy, and enjoy your games.
+Just login to your EA Desktop account from GOG Galaxy, and enjoy your games.
 
 ## Kudos
 
