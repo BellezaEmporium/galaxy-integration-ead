@@ -11,7 +11,6 @@ Achievements, game play time and available subscription games should be up to da
 ## Disclaimer
 
 Please note that, in order to make this plugin fully functional, you need to have a valid EA Desktop account.
-Mac users still have Origin, and will be switched to EA Desktop pretty soon.
 
 ## Disclaimer 2
 
