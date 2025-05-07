@@ -2,7 +2,7 @@ import os
 import sys
 import json
 import tempfile
-from shutil import rmtree, which
+from shutil import rmtree, which, copy
 from distutils.dir_util import copy_tree
 
 
@@ -58,6 +58,9 @@ def build(c, output='output', ziparchive=None):
 
     print('--> Copying source files')
     copy_tree("src", output)
+    
+    print('--> Copying install.bat file')
+    copy("install.bat", output)
 
     if ziparchive is not None:
         print('--> Compressing to {}'.format(ziparchive))
