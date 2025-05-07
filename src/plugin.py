@@ -27,6 +27,7 @@ from http_client import AuthenticatedHttpClient
 from lgames_manifests import get_install_location, get_state_changes, parse_total_size, process_iter
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
+from pcsign_hash import PCSign, PCSignVersion
 import re
 
 
@@ -75,6 +76,8 @@ class EAPlugin(Plugin):
         super().__init__(Platform.Origin, __version__, reader, writer, token)
         self._user_id = None
         self._persona_id = None
+        self._access_token = None
+        self._refresh_token = None
 
         def auth_lost():
             self.lost_authentication()
@@ -178,38 +181,95 @@ class EAPlugin(Plugin):
             raise AuthenticationRequired()
 
     async def authenticate(self, stored_credentials=None):
-        stored_cookies = stored_credentials.get("cookies") if stored_credentials else None
-        if not stored_cookies:
-            return NextStep("web_session", AUTH_PARAMS, js=JS)
-        return await self._do_authenticate(stored_cookies)
+        if stored_credentials:
+            self._refresh_token = stored_credentials.get('refresh_token')
+            if self._refresh_token:
+                try:
+                    # Force refresh the token every time for fresh session
+                    logger.info("Authenticating with stored credentials")
+                    await self._force_refresh_access_token()
+                    user_id, persona_id, user_name = await self._backend_client.get_identity()
+                    logger.info(f"Successfully authenticated {user_name} with stored credentials")
+                    self._user_id = user_id
+                    self._persona_id = persona_id
+                    return Authentication(self._user_id, user_name)
+                except Exception as e:
+                    logger.error(f"Failed to refresh: {str(e)}")
+                    self._refresh_token = None
+        
+        # Start new authentication flow
+        logger.info("Starting new authentication flow")
+        return await self._begin_auth_flow()
+
+    async def _begin_auth_flow(self):
+        pc_sign_definition = PCSign(sv=PCSignVersion.V2)
+        pc_sign = pc_sign_definition.generate_pc_sign()
+        params = {
+            "window_title": "Login to EA Desktop",
+            "window_width": 495 if is_windows() else 480,
+            "window_height": 746 if is_windows() else 708,
+            "start_uri": "https://accounts.ea.com/connect/auth"
+                        "?response_type=code&client_id=JUNO_PC_CLIENT&display=junoClient/login"
+                        "&redirect_uri=qrc:///html/login_successful.html"
+                        "&locale=en_US&pc_sign={}".format(pc_sign),
+            "end_uri_regex": "qrc:/html/login_successful.html.*"
+        }
+        return NextStep("web_session", params, js=JS)
+
+    async def _force_refresh_access_token(self):
+        try:
+            self._access_token, self._refresh_token = await self._http_client._refresh_access_token(self._refresh_token)
+            self.store_credentials({
+                'refresh_token': self._refresh_token
+            })
+            # Don't store access_token in persistent storage
+        except Exception as e:
+            logging.error(f"Failed to refresh token: {e}")
+            raise AuthenticationRequired()
+
+    def _store_tokens(self, access_token, refresh_token):
+        self.store_credentials({
+            "access_token": access_token,
+            "refresh_token": refresh_token
+        })
 
     async def pass_login_credentials(self, step, credentials, cookies):
-        new_cookies = {cookie["name"]: cookie["value"] for cookie in cookies}
-        auth_info = await self._do_authenticate(new_cookies)
-        self._store_cookies(new_cookies)
-        return auth_info
+        logger.debug("Passing login credentials: step {}, credentials {}, cookies {}".format(step, credentials, cookies))
+        auth_code = self._extract_code_from_uri(credentials["end_uri"])
+        return await self._do_authenticate(auth_code)
 
-    async def _do_authenticate(self, cookies):
+    def _extract_code_from_uri(self, uri):
+        import urllib.parse
+        parsed_uri = urllib.parse.urlparse(uri)
+        query_params = urllib.parse.parse_qs(parsed_uri.query)
+        
+        if 'code' in query_params:
+            return query_params['code'][0]
+        else:
+            raise AuthenticationRequired("No authorization code found in redirect URI")
+
+    async def _do_authenticate(self, auth_code):
         try:
             logger.info("Starting authentication process")
-            await self._http_client.authenticate(cookies)
-            logger.info("HTTP client authenticated")
-            
-            self._access_token, self._refresh_token = await self._http_client._get_access_token()
+            self._access_token, self._refresh_token = await self._http_client._exchange_code_for_token(auth_code)
             logger.info("Access token obtained")
             
             if not self._access_token:
-                logger.error("Access token not set after _get_access_token")
+                logger.error("Access token not set after _exchange_code_for_token")
                 raise AccessDenied("No access token obtained")
             
-            self._user_id, self._persona_id, user_name = await self._backend_client.get_identity()
+            user_id, persona_id, user_name = await self._backend_client.get_identity()
+            self._user_id = user_id
+            self._persona_id = persona_id
             logger.info(f"Identity obtained: user_id={self._user_id}, persona_id={self._persona_id}, user_name={user_name}")
+            
+            self._store_tokens(self._access_token, self._refresh_token)
             
             return Authentication(self._user_id, user_name)
         except (AccessDenied, InvalidCredentials, AuthenticationRequired) as e:
             logger.exception(f"Failed to authenticate: {repr(e)}")
             raise InvalidCredentials()
-
+        
     @staticmethod
     def _offer_id_from_game_id(game_id: GameId) -> OfferId:
         return OfferId(game_id.split('@')[0])
@@ -220,13 +280,14 @@ class EAPlugin(Plugin):
         owned_offers = await self._get_owned_offers()
         games = []
         for game_id, offer in owned_offers.items():
-            if game_id is not None:
-                game = Game(
-                    game_id,
-                    offer["displayName"],
-                    None,
-                    LicenseInfo(LicenseType.SinglePurchase, None)
-                )
+            if game_id and offer is not None:
+                if "displayName" in offer or "i18n" in offer:
+                    game = Game(
+                        game_id,
+                        offer.get("displayName") or offer["i18n"].get("displayName"),
+                        None,
+                        LicenseInfo(LicenseType.SinglePurchase, None)
+                    )
                 games.append(game)
 
         return games
@@ -317,13 +378,16 @@ class EAPlugin(Plugin):
 
         entitlement_data = await self._backend_client.get_entitlements()
         basegame_entitlements = [x for x in entitlement_data if x["product"] is not None and x["product"]["baseItem"]["gameType"] == "BASE_GAME"]
-        basegame_offers = await self._get_offers([x["originOfferId"] for x in basegame_entitlements])
-
-        return {
-            get_game_id(ent): basegame_offers[ent["originOfferId"]]
-            for ent in basegame_entitlements
-            if ent["originOfferId"] in basegame_offers
-        }
+        offers_data = await self._get_offers([x["originOfferId"] for x in basegame_entitlements])
+        
+        result = {}
+        for ent in basegame_entitlements:
+            offer_id = ent["originOfferId"]
+            if offer_id in offers_data:
+                game_id = get_game_id(ent)
+                result[game_id] = offers_data[offer_id]
+                
+        return result
 
     async def get_subscriptions(self) -> List[Subscription]:
         self._check_authenticated()
@@ -394,7 +458,11 @@ class EAPlugin(Plugin):
             if offer is None:
                 logger.exception("Internal cache out of sync")
                 raise UnknownError()
-            game_slug = GameSlug(offer["gameSlug"])
+            if "gameSlug" in offer:
+                game_slug = GameSlug(offer["gameSlug"])
+            else:
+                # Specific case in which offer data's in the other format
+                game_slug = GameSlug(offer["gameNameFacetKey"])
 
             return await self._get_game_times_for_master_title(
                 game_id,

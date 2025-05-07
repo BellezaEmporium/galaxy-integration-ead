@@ -64,7 +64,20 @@ class EABackendClient:
         u2 = u2.replace(' ', '%20').replace('+', '%20')
         response = await self._http_client.get(u2)
         try:
-            return response['data']['legacyOffers'][0], response['data']['gameProducts']['items'][0]
+            legacy_offer = response['data']['legacyOffers'][0] if response['data']['legacyOffers'] else {}
+            game_product = response['data']['gameProducts']['items'][0] if response['data']['gameProducts']['items'] else {}
+            
+            # Assurez-vous que la clé displayName existe
+            if 'displayName' not in legacy_offer and game_product and 'name' in game_product:
+                legacy_offer['displayName'] = game_product['name']
+            elif 'displayName' not in legacy_offer:
+                legacy_offer['displayName'] = f"Unknown Game ({offer_id})"
+                
+            # Assurez-vous que gameSlug est également disponible
+            if 'gameSlug' in game_product:
+                legacy_offer['gameSlug'] = game_product['gameSlug']
+                
+            return legacy_offer, game_product
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()
