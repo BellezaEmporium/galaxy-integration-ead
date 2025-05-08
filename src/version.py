@@ -1,7 +1,19 @@
-__version__ = "0.43"
+__version__ = "0.44.2"
 
 __changelog__ = {
     "unreleased":"""""",
+    "0.44.2":
+    """
+        - improve game library discovery
+        - improve local game discovery
+        - properly handle the case when the offer points to a xml file instead of an executable
+    """,
+    "0.44":
+    """
+        - overall improvements to the plugin
+        - implement pc_sign, and use it for login
+        - properly handle the login refresh process, and the token expiration
+    """,
     "0.43":
     """
         - rewrote the login process to get a long-lasting token, with a token refresh method. Kudos to @imLinguin for the help and information

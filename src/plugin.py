@@ -11,6 +11,7 @@ import webbrowser
 from functools import partial
 from typing import Any, Callable, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable
 import winreg
+import xml
 
 from galaxy.api.consts import LicenseType, Platform
 from galaxy.api.errors import (
@@ -112,21 +113,33 @@ class EAPlugin(Plugin):
         if self._offer_id_cache is None:
             self._get_owned_offers()
 
+        # There's two different outputs, one that directly gives the executable path, and one that points
+        # to a installerdata.xml file. Both works, but the installerdata.xml needs a bit more work.
+
         for offer_id, game_data in self._offer_id_cache.items():
             state = LocalGameState.None_
             regkey_full = None
-            if ("installCheckOverride" in game_data and 
-                game_data["installCheckOverride"] is not None and 
-                game_data["installCheckOverride"] != "" and 
-                game_data["installCheckOverride"].endswith(".exe")):
-                regkey_full = game_data["installCheckOverride"]
-            elif ("executePathOverride" in game_data and 
-                game_data["executePathOverride"] is not None and 
-                game_data["executePathOverride"] != "" and 
-                game_data["executePathOverride"].endswith(".exe")):
-                regkey_full = game_data["executePathOverride"]
+            # Check if either of the installation paths are set
+            if ("installCheckOverride" in game_data or "executePathOverride" in game_data): 
+                path = game_data.get("installCheckOverride", None) or game_data.get("executePathOverride", None)
+                if path is not None and path != "":
+                    # What we would think is an executable might point to a installerdata.xml file.
+                    # we'll assume EA did his job well and all installerpath.xml files are DiPManifest-formatted
+                    # (would we be surprised to see if it wasn't the case ?)
+                    if path.endswith("installerpath.xml"):
+                        # installerdata.xml file, need to parse it to get the executable path
+                        try:
+                            tree = xml.etree.ElementTree.parse(path)
+                            root = tree.getroot()
+                            regkey_full = root.find(".//runtime/filePath").text
+                        except Exception as e:
+                            logger.error(f"Error parsing installerdata.xml: {e}")
+                            continue
+                    else:
+                        regkey_full = path
             else:
                 regkey_full = None
+            
 
             if regkey_full:
                 regkey_path, part = regkey_full.split(']')
@@ -137,6 +150,7 @@ class EAPlugin(Plugin):
                     logger.error(f"Invalid registry key format: {regkey_full}")
                     continue
 
+
                 hive = getattr(winreg, regkey_parts[0]) # Convert hive to integer
                 regkey_path = "\\".join(regkey_parts[1:-1]) # Join the rest of the path excluding the last part
                 part = regkey_parts[-1] # The last part of the path is the part you want to get the value of
@@ -144,7 +158,7 @@ class EAPlugin(Plugin):
                 install_location = get_install_location(hive, regkey_path, part)
 
                 if install_location:
-                    # get last part of the registry now that we have the install location to trigger the last part of the registry
+                    game_name = os.path.basename(install_location)
                     if os.path.exists(install_location):
                         state = LocalGameState.Installed
                         if is_game_running(game_name):
