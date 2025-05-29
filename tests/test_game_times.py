@@ -6,7 +6,7 @@ from galaxy.api.errors import AuthenticationRequired
 from galaxy.api.types import GameTime
 from galaxy.unittest.mock import async_return_value
 
-from plugin import OriginBackendClient
+from plugin import EABackendClient
 
 # only fields important for the logic are specified
 
@@ -127,7 +127,7 @@ BACKEND_LASTPLAYED_PARSED = {
 async def test_lastplayed_parsing(persona_id, http_client, create_xml_response):
     http_client.get.return_value = create_xml_response(BACKEND_LASTPLAYED_RESPONSE)
 
-    assert BACKEND_LASTPLAYED_PARSED == await OriginBackendClient(http_client).get_lastplayed_games(persona_id)
+    assert BACKEND_LASTPLAYED_PARSED == await EABackendClient(http_client).get_lastplayed_games(persona_id)
 
     http_client.get.assert_called_once()
 
@@ -146,7 +146,7 @@ async def test_game_time_parsing(total, last_played_time, game_time, persona_id,
         </usage>
     '''.format(total=total, last_played_time=last_played_time))
 
-    assert game_time == await OriginBackendClient(http_client).get_game_time(persona_id, None, None)
+    assert game_time == await EABackendClient(http_client).get_game_time(persona_id, None, None)
 
     http_client.get.assert_called_once()
 

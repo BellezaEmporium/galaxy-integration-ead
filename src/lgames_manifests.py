@@ -329,7 +329,8 @@ def parse_installerdata_xml(game_data, xml_path, base_install_location):
                     return  get_install_location(hive, key_path, value_name)
                 else:
                     logger.error(f"Invalid registry key format: {install_location}")
-                    return base_install_location        # Look for runtime/launcher elements
+                    return base_install_location
+                # Look for runtime/launcher elements
         launchers = root.findall(".//runtime/launcher")
         
         if not launchers:

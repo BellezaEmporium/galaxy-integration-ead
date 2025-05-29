@@ -4,7 +4,18 @@ from unittest.mock import patch
 
 from galaxy.api.types import Authentication, NextStep
 
-from plugin import AUTH_PARAMS, JS
+from plugin import JS
+
+AUTH_PARAMS = {
+    "window_title": "Login to EA Desktop",
+    "window_width": 495,
+    "window_height": 850,
+    "start_uri": "https://accounts.ea.com/connect/auth"
+                "?response_type=code&client_id=JUNO_PC_CLIENT&display=junoClient/login"
+                "&redirect_uri=qrc:///html/login_successful.html"
+                "&locale=en_US&pc_sign=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmVhLmNvbSIsInN1YiI6IjE0MTQwMDAwMDAwMDAwMDAwMCIsImF1ZCI6IkpVTk9fUENfQ0xJRU5UIiwiZXhwIjoxNjg4MjYyMDY2LCJpYXQiOjE2ODgyNTk0NjYsIm5iZiI6MTY4ODI1OTQ2NiwianRpIjoiZTAyYjA3MzAtZDYxNy00YjQzLTg3NzItZDIzYjA5Mjc0N2E3Iiwic2NvcGUiOiJwcm9maWxlIG9mZmxpbmVzIHByb2ZpbGU6cmVhZCBwcm9maWxlOnVwbG9hZCBwcm9maWxlOmRvd25sb2FkIHByb2ZpbGU6dXBsb2FkIGFjY291bnRzOmFjY291bnRzOmFjY291bnRzOnJlYWQgYWNjZXNzX3Rva2VuIGFjY291bnRzOnJlYWQgYWNjZXNzX3Rva2VuOnVwbG9hZCBhY2Nlc3NfdG9rZW46dXBsb2FkIGFjY291bnRzOnVwbG9hZCBhY2Nlc3NfdG9rZW46ZG93bmxvYWQifQ",
+    "end_uri_regex": "qrc:/html/login_successful.html.*"
+}
 
 
 def test_no_stored_credentials(plugin, http_client, backend_client):

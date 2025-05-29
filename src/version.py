@@ -1,7 +1,16 @@
-__version__ = "0.44.2"
+__version__ = "0.44.3"
 
 __changelog__ = {
     "unreleased":"""""",
+    "0.44.3":
+    """
+        - made the authentication process go snappier thanks to a hw cache for the pc_sign
+        - fixed the mid creation method linked to the pc_sign creation (thanks to @imLinguin for the help)
+        - normalized the local game discovery process (instead of going to billions of places, just load installerdata.xml). if the game is too old, keep the old method
+        - fixed the local game size discovery (use of manifest file)
+        - fixed a few quacks related to code
+        - removed the use of deprecated Galaxy methods
+    """,
     "0.44.2":
     """
         - improve game library discovery

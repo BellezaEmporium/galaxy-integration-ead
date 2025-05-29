@@ -18,13 +18,13 @@ from galaxy.api.errors import (
 )
 from galaxy.api.plugin import create_and_run_plugin, Plugin
 from galaxy.api.types import (
-    Achievement, Authentication, FriendInfo, Game, GameTime, LicenseInfo, LocalGame, LocalGameState,
+    Achievement, Authentication, UserInfo, Game, GameTime, LicenseInfo, LocalGame,
     NextStep, Subscription, SubscriptionGame
 )
 
 from backend import MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
 from http_client import AuthenticatedHttpClient
-from lgames_manifests import get_install_location, get_state_changes, parse_total_size, process_iter
+from lgames_manifests import get_install_location, get_state_changes, local_game_status, parse_total_size, process_iter, get_install_path_from_xml, update_local_games
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
 from pcsign_hash import preload_pc_sign_cache, generate_pc_sign_fast
@@ -124,109 +124,12 @@ class EAPlugin(Plugin):
     def _offer_id_cache(self, value: Dict[OfferId, Json]):
         self.persistent_cache["offers"] = json.dumps(value)
     
-    def _find_executable_in_dir(self, directory):
-        """Cherche un exécutable dans le dossier donné (retourne le premier .exe trouvé)."""
-        if not directory or not os.path.isdir(directory):
-            return None
-        for entry in os.listdir(directory):
-            if entry.lower().endswith('.exe'):
-                return os.path.join(directory, entry)
-        return None
-
     def _update_local_games(self):
-        local_games = []
-        running_exes = set(os.path.basename(exe).lower() for _, exe in process_iter() if exe)
-
-        for offer_id, game_data in self._offer_id_cache.items():
-            if "displayName" in game_data:
-                logger.info(f"Checking local game status for {offer_id}, game name is {game_data.get('displayName')}")
-                state = LocalGameState.None_
-                install_path = None
-
-                path = game_data.get("installCheckOverride") or game_data.get("executePathOverride")
-                if path:
-                    if path.endswith("installerdata.xml"):
-                        base_path = self._get_install_path_from_xml(path)
-                        if base_path:
-                            exe = self._find_executable_in_dir(base_path)
-                            install_path = exe or base_path
-                    elif path.startswith('[') and ']' in path:
-                        try:
-                            reg = path.split(']', 1)[0][1:]
-                            comps = reg.split('\\')
-                            hive = getattr(winreg, comps[0])
-                            key_path = "\\".join(comps[1:-1])
-                            value_name = comps[-1]
-                            install_path = get_install_location(hive, key_path, value_name)
-                        except Exception as e:
-                            logger.error(f"Error accessing registry key {path}: {e}")
-                    else:
-                        install_path = path
-
-                if install_path and os.path.exists(install_path):
-                    state = LocalGameState.Installed
-                    exe_name = os.path.basename(install_path).lower()
-                    if exe_name in running_exes:
-                        state |= LocalGameState.Running
-                    logger.info(f"{offer_id} is installed at {install_path}")
-
-                local_games.append(LocalGame(offer_id, state))
-
-            else:
-                continue
-
-        return local_games
-        
-    def _get_install_path_from_xml(self, xml_path):
-        """Extract the installation path from the XML file or registry key."""
-        try:
-            # If the path is a XML file, parse it to get the installation path
-            if xml_path.startswith('[') and ']' in xml_path:
-                reg_path, xml_relative_path = xml_path.split(']', 1)
-                reg_key = reg_path[1:]  # Remove the [ at the beginning
-                
-                # Divide the registry key into its components
-                reg_components = reg_key.split('\\')
-                if len(reg_components) < 3:
-                    logger.error(f"Invalid registry key format: {xml_path}")
-                    return None
-                
-                try:
-                    hive_name = reg_components[0]
-                    hive = getattr(winreg, hive_name)
-                    value_name = reg_components[-1]
-                    key_path = "\\".join(reg_components[1:-1])
-                    
-                    # Get the base installation location from the registry
-                    base_install_location = get_install_location(hive, key_path, value_name)
-                    
-                    if base_install_location:
-                        full_xml_path = os.path.join(base_install_location, xml_relative_path)
-                        if os.path.exists(full_xml_path):
-                            return base_install_location  # Give the base installation location
-                except AttributeError:
-                    logger.error(f"Unknown registry hive: {hive_name}")
-                    return None
-            elif os.path.exists(xml_path):
-                return os.path.dirname(xml_path)
-                
-        except Exception as e:
-            logger.info(f"Error while parsing installerdata.xml file: {e}")
-
-        return None
+        return update_local_games(self)
 
     def _local_game_status(self):
-        '''
-        returns list of changed games (added, removed, or changed)
-        updated local_games property
-        '''
-        new_local_games = self._update_local_games()
-        notify_list = get_state_changes(self._local_games, new_local_games)
-        self._local_games = new_local_games
-
-        return self._local_games
+        return local_game_status(self)
         
-
     async def shutdown(self):
         await self._http_client.close()
 
@@ -237,8 +140,8 @@ class EAPlugin(Plugin):
         if not self._http_client.is_authenticated():
             logger.exception("Plugin not authenticated")
             raise AuthenticationRequired()
-
-    async def authenticate(self, stored_credentials=None):
+    
+    async def authenticate(self, stored_credentials):
         if stored_credentials:
             self._refresh_token = stored_credentials.get('refresh_token')
             if self._refresh_token:
@@ -248,7 +151,7 @@ class EAPlugin(Plugin):
                     await self._force_refresh_access_token()
                     identity_result = await self.get_identity()
                     if identity_result is None:
-                        logger.error("get_identity returned None")
+                        logger.error("get_identity returned None, starting new authentication flow")
                         raise AuthenticationRequired("Failed to get identity")
                     user_id, persona_id, user_name = identity_result
                     logger.info(f"Successfully authenticated {user_name} with stored credentials")
@@ -257,7 +160,8 @@ class EAPlugin(Plugin):
                     return Authentication(self._user_id, user_name)
                 except Exception as e:
                     logger.error(f"Failed to refresh: {str(e)}")
-            self._refresh_token = None
+                    # Clear invalid refresh token
+                    self._refresh_token = None
         
         # Start new authentication flow
         logger.info("Starting new authentication flow")
@@ -307,35 +211,33 @@ class EAPlugin(Plugin):
                     
                     if "nexus" in token_data:
                         token = token_data["nexus"]
-                        psif = token.get('psif')  # Utilise .get() pour éviter KeyError
+                        psif = token.get('psif')
                         if not psif or not isinstance(psif, list):
                             logger.error("Invalid token format: 'psif' is not a list")
                             raise AuthenticationRequired("Invalid token format")
                         
                         # Extract user information from token
-                        self._user_id = token['pid']
+                        self._user_id = token['pid'] # user id
                         self._persona_id = psif[0]['id']  # persona id
                         user_name = psif[0]['dis']  # user name
                         
-                        logger.info(f"Identity successfully obtained from JWT token: user_id={self._user_id}, persona_id={self._persona_id}, user_name={user_name}")
+                        logger.info(f"Identity successfully obtained from JWT token.")
                         return self._user_id, self._persona_id, user_name
                     else:
                         logger.warning("'nexus' key not found in token, falling back to backend method")
-                        raise ValueError("'nexus' key missing from token")
+                        # Fall back to getting identity from backend if JWT decode fails
+                        try:
+                            user_id, persona_id, user_name = await self._backend_client.get_identity()
+                            self._user_id = user_id
+                            self._persona_id = persona_id
+                            logger.info(f"Identity successfully obtained from backend: {user_name}")
+                            return self._user_id, self._persona_id, user_name
+                        except Exception as e:
+                            logger.error(f"Both methods (JWT & backend) failed: {e}")
+                            raise AuthenticationRequired("Failed to get identity from both methods")
                         
                 except (ValueError, json.JSONDecodeError, KeyError) as e:
                     logger.warning(f"Failed to decode JWT token: {e}, falling back to backend method.")
-                    
-                # Fall back to getting identity from backend if JWT decode fails
-                try:
-                    user_id, persona_id, user_name = await self._backend_client.get_identity()
-                    self._user_id = user_id
-                    self._persona_id = persona_id
-                    # Pas besoin de reassigner user_name = user_name
-                    return self._user_id, self._persona_id, user_name
-                except Exception as e:
-                    logger.error(f"Both methods (JWT & backend) failed: {e}")
-                    raise AuthenticationRequired("Failed to get identity from both methods")
                     
         except Exception as e:
             logger.error(f"Something happened while trying to fetch token: {e}")
@@ -354,16 +256,26 @@ class EAPlugin(Plugin):
             self.store_credentials({})
             self._refresh_token = None
             self._access_token = None
-            raise AuthenticationRequired("Token refresh failed, re-authentication required")
+            raise AuthenticationRequired("Token refresh failed, re-authentication required")        
         except Exception as e:
             logging.error(f"Failed to refresh token: {e}")
             raise AuthenticationRequired()
 
     def _store_tokens(self, access_token, refresh_token):
-        self.store_credentials({
+        # Préserver les cookies existants lors du stockage des tokens
+        current_credentials = self.persistent_cache.get("credentials", {})
+        if isinstance(current_credentials, str):
+            try:
+                current_credentials = json.loads(current_credentials)
+            except:
+                current_credentials = {}
+        
+        credentials = current_credentials.copy() if current_credentials else {}
+        credentials.update({
             "access_token": access_token,
             "refresh_token": refresh_token
         })
+        self.store_credentials(credentials)
 
     async def pass_login_credentials(self, step, credentials, cookies):
         logger.debug(f"Web process succeeded, passing credentials to plugin.")
@@ -378,36 +290,42 @@ class EAPlugin(Plugin):
             else:
                 logger.error(f"No code found in query: {query_params}")
             if code:
+                self._store_cookies(cookies)
                 logger.info(f"Code obtained: {code}")
-                self._access_token = code
                 return await self._do_authenticate(code)
         else:
             raise AuthenticationRequired("No code found in redirect URI")
 
     async def _do_authenticate(self, code: str):
-        try:
-            self._access_token, self._refresh_token = await self._http_client._exchange_auth_code_for_token(code)
-
-            # decipher JWT token, it contains the persona id and the user id
-            # JWT token is base64 encoded, so we need to decode it
+        if code:
             try:
-                user_id, persona_id, user_name = await self.get_identity()
-                self._user_id = user_id
-                self._persona_id = persona_id
-            except Exception as exc:
-                logger.error(f"Failed to get identity: {exc}")
-                raise AuthenticationRequired("Failed to get identity from token")
+                self._access_token, self._refresh_token = await self._http_client._exchange_auth_code_for_token(code)
+                
+                if self._access_token and self._refresh_token:
+                    self._store_tokens(self._access_token, self._refresh_token)
 
-            self._store_tokens(self._access_token, self._refresh_token)
-            logger.info("Access token set successfully")
+                    # decipher JWT token, it contains the persona id and the user id
+                    # JWT token is base64 encoded, so we need to decode it
+                    try:
+                        user_id, persona_id, user_name = await self.get_identity()
+                        self._user_id = user_id
+                        self._persona_id = persona_id
+                    except Exception as exc:
+                        logger.error(f"Failed to get identity: {exc}")
+                        raise AuthenticationRequired("Failed to get identity from token")
 
-            if not self._user_id or not user_name:
-                logger.error("user_id or user_name is None après authentification")
-                raise AuthenticationRequired("user_id or user_name is None")
-            return Authentication(self._user_id, user_name)
-        except (AccessDenied, InvalidCredentials, AuthenticationRequired) as e:
-            logger.exception(f"Failed to authenticate: {repr(e)}")
-            raise InvalidCredentials()
+                    logger.info("Access token set successfully")
+
+                if not self._user_id or not user_name:
+                    logger.error("user_id or user_name is None after authentication")
+                    raise AuthenticationRequired("user_id or user_name is None")
+                return Authentication(self._user_id, user_name)
+            except (AccessDenied, InvalidCredentials, AuthenticationRequired) as e:
+                logger.exception(f"Failed to authenticate: {repr(e)}")
+                raise InvalidCredentials()
+        else:
+            logger.error("No code provided for authentication")
+            raise AuthenticationRequired("No code provided for authentication")
         
     @staticmethod
     def _offer_id_from_game_id(game_id: GameId) -> OfferId:
@@ -477,7 +395,7 @@ class EAPlugin(Plugin):
                 if "displayName" in offer:
                     game = Game(
                         game_id,
-                        offer.get("displayName") or "",
+                        offer.get("displayName") or offer['i18n'].get('displayName', 'Unknown Game'),
                         None,
                         LicenseInfo(LicenseType.SinglePurchase, None)
                     )
@@ -642,8 +560,8 @@ class EAPlugin(Plugin):
         self._check_authenticated()
 
         return [
-            FriendInfo(user_id=str(user_id), user_name=str(user_name))
-            for user_id, user_name in (await self._backend_client.get_friends()).items()
+            UserInfo(user_id=str(user_id), user_name=str(user_name), avatar_url=str(avatar_url))
+            for user_id, (user_name, avatar_url) in (await self._backend_client.get_friends()).items()
         ]
 
     @staticmethod
@@ -700,15 +618,21 @@ class EAPlugin(Plugin):
     if is_windows():
         async def uninstall_game(self, game_id: GameId):
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, partial(subprocess.run, ["control", "appwiz.cpl"]))
-
+            await loop.run_in_executor(None, partial(subprocess.run, ["control", "appwiz.cpl"]))    
+    
     async def shutdown_platform_client(self) -> None:
         self._open_uri("origin2://quit")
 
     def _store_cookies(self, cookies):
-        credentials = {
-            "cookies": cookies
-        }
+        # Préserver les tokens existants lors du stockage des cookies
+        current_credentials = self.persistent_cache.get("credentials", {})
+        if isinstance(current_credentials, str):
+            try:
+                current_credentials = json.loads(current_credentials)
+            except:
+                current_credentials = {}
+        credentials = current_credentials.copy() if current_credentials else {}
+        credentials["cookies"] = cookies
         self.store_credentials(credentials)
 
     def _update_stored_cookies(self, morsels):
@@ -726,8 +650,9 @@ class EAPlugin(Plugin):
         loop = asyncio.get_running_loop()
         try:
             self._local_games_update_in_progress = True
-            local_games = await loop.run_in_executor(None, partial(self._local_game_status))
+            local_games = await loop.run_in_executor(None, partial(self._update_local_games))
             self._local_games_last_update = time.time()
+            self._local_games = local_games
         finally:
             self._local_games_update_in_progress = False
         return local_games

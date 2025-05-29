@@ -186,7 +186,7 @@ class EABackendClient:
 
     async def get_friends(self):
         response = await self._http_client.get(
-            "{}?query=query{{me{{friends{{items{{player{{pd psd displayName}}}}}}}}}}".format(
+            "{}?query=query{{me{{friends{{items{{player{{pd psd displayName avatar{{large{{path}}}}}}}}}}}}}}".format(
                 self._get_api_host()
             )
         )
@@ -201,7 +201,12 @@ class EABackendClient:
                                 "player": {
                                     "pd": "...",
                                     "psd": "...",
-                                    "displayName": "User"
+                                    "displayName": "User",
+                                    "avatar": {
+                                        "large": {
+                                            "path": "..."
+                                        }
+                                    }
                                 }
                             }
                         ]
@@ -213,7 +218,7 @@ class EABackendClient:
 
         try:
             return {
-                user_json['player']['pd']: user_json["player"]["displayName"]
+                user_json['player']['pd']: (user_json["player"]["displayName"], user_json["player"]["avatar"]["large"]["path"])
                 for user_json in response["data"]["me"]["friends"]["items"]
             }
         except (AttributeError, KeyError):

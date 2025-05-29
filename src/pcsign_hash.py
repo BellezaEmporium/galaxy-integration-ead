@@ -311,7 +311,7 @@ class HardwareInfoCache:
             if not msn:
                 msn = "macOS-Unknown-UUID"
                 
-            return "", bsn, gid, hsn, msn, mac, "", ""  # Ajustement pour correspondre au format Windows
+            return "", bsn, gid, hsn, msn, mac, "", "" 
         except Exception as e:
             # In case of error, use default values
             import logging
