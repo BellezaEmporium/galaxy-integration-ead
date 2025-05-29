@@ -42,7 +42,7 @@ def test_integration():
 
     plugin_socket = server.accept_connection(TIMEOUT)
     plugin_socket.settimeout(TIMEOUT)
-    plugin_socket.sendall((json.dumps(request) + "\n").encode("utf-8"))
+    plugin_socket.sendall((json.dumps(request, default=str) + "\n").encode("utf-8"))
     response = json.loads(plugin_socket.recv(4096))
     response["result"]["features"] = set(response["result"]["features"])
     print(response)

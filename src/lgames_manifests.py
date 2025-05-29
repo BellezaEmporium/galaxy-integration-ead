@@ -11,9 +11,7 @@ else:
 from typing import Iterator, List, Optional, Set, Tuple
 import winreg
 
-from galaxy.api.types import (
-     LocalGame, LocalGameState
-)
+from galaxy.api.types import LocalGame, LocalGameState
 
 # Helpers for the Local Games data
 
@@ -23,13 +21,23 @@ class EAGameState(Flag):
     Playable = 2
 
 def parse_total_size(filepath) -> int:
-    # get folder size
     total_size = 0
-    if filepath is not None:
-        for dirpath, _, filenames in os.walk(filepath):
-            for f in filenames:
-                fp = os.path.join(dirpath, f)
-                total_size += os.path.getsize(fp)
+    if filepath is not None and os.path.isfile(filepath):
+        base_path = os.path.dirname(os.path.dirname(filepath))
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                for line in f:
+                    rel_path = line.strip().strip('"\'')
+                    if not rel_path:
+                        continue
+                    rel_path = os.path.normpath(rel_path)
+                    abs_path = os.path.join(base_path, rel_path)
+                    if os.path.isfile(abs_path):
+                        total_size += os.path.getsize(abs_path)
+                    else:
+                        continue
+        except Exception as e:
+            logger.warning(f"Error while reading {filepath}: {e}")
     return total_size
 
 
@@ -99,7 +107,7 @@ if platform.system() == "Windows":
                 file_name_buffer = create_unicode_buffer(_MAX_PATH)
                 file_name_len = DWORD(len(file_name_buffer))
 
-                return file_name_buffer[:file_name_len.value] if windll.kernel32.QueryFullProcessImageNameW(
+                return file_name_buffer.value[:file_name_len.value] if windll.kernel32.QueryFullProcessImageNameW(
                     h_process, _WIN32_PATH_FORMAT, file_name_buffer, byref(file_name_len)
                 ) else None
 
@@ -111,9 +119,8 @@ if platform.system() == "Windows":
 
     def get_process_ids() -> Set[int]:
         _PROC_ID_T = DWORD
-        list_size = 4096
 
-        def try_get_info_list(list_size) -> Tuple[int, List[int]]:
+        def try_get_info_list(list_size) -> List[int]:
             result_size = DWORD()
             proc_id_list = (_PROC_ID_T * list_size)()
 
@@ -123,17 +130,16 @@ if platform.system() == "Windows":
             size = int(result_size.value / sizeof(_PROC_ID_T()))
             return proc_id_list[:size]
 
+        list_size = 4096
         while True:
             proc_id_list = try_get_info_list(list_size)
             if len(proc_id_list) < list_size:
-                return proc_id_list
+                return set(proc_id_list)
             # if returned collection is not smaller than list size it indicates that some pids have not fitted
             list_size *= 2
 
-        return set(proc_id_list)
 
-
-    def process_iter() -> Iterator[Tuple[int, str]]:
+    def process_iter() -> Iterator[Tuple[int, Optional[str]]]:
         try:
             for pid in get_process_ids():
                 yield get_process_info(pid)
@@ -142,7 +148,7 @@ if platform.system() == "Windows":
             pass
 
 else:
-    def process_iter() -> Iterator[Tuple[int, str]]:
+    def process_iter() -> Iterator[Tuple[int, Optional[str]]]:
         for pid in psutil.pids():
             try:
                 yield pid, psutil.Process(pid=pid).as_dict(attrs=["exe"])["exe"]
@@ -154,11 +160,20 @@ else:
                 logger.exception("Failed to get information for PID=%s" % pid)
 
 
-def get_install_location(base_key, regkey_path, part):
+def get_install_location(base_key, regkey_path, part) -> Optional[str]:
     try:
         with winreg.OpenKey(base_key, regkey_path) as key:
             install_location, _ = winreg.QueryValueEx(key, part)
-            return install_location
+            # If the registry value is a list, take the first element
+            if isinstance(install_location, list):
+                if not install_location:  # If list is empty
+                    return None
+                install_location = install_location[0]
+            # Handle None case
+            if install_location is None:
+                return None
+            # Ensure we always return a string
+            return str(install_location)
     except FileNotFoundError:
         return None
     except Exception as e:

@@ -18,7 +18,7 @@ AchievementSet = NewType("AchievementSet", str)
 OfferId = NewType("OfferId", str)
 Timestamp = NewType("Timestamp", int)
 GameSlug = NewType("GameSlug", str)
-Json = Dict[str, Any]  # helper alias for general purpose
+Json = Dict[str, Any]
 
 SubscriptionDetails = namedtuple('SubscriptionDetails', ['tier', 'end_time'])
 
@@ -47,7 +47,7 @@ class EABackendClient:
 
     async def get_entitlements(self) -> List[Json]:
         # Step 1 = get all Origin product IDs
-        u1 = "{}?query=query{{me{{ownedGameProducts(locale:\"en\" entitlementEnabled:true storefronts:[EA,STEAM,EPIC] type:[DIGITAL_FULL_GAME,PACKAGED_FULL_GAME] platforms:[PC] paging:{{limit:9999}}){{items{{originOfferId product{{gameSlug baseItem {{gameType}} gameProductUser{{ownershipMethods entitlementId}}}}}}}}}}}}".format(self._get_api_host())
+        u1 = "{}?query=query{{me{{ownedGameProducts(locale:\"DEFAULT\" entitlementEnabled:true storefronts:[EA] type:[DIGITAL_FULL_GAME, PACKAGED_FULL_GAME, DIGITAL_EXTRA_CONTENT, PACKAGED_EXTRA_CONTENT] platforms:[PC] paging:{{limit:9999}}){{items{{originOfferId product{{id name gameSlug baseItem {{gameType}} gameProductUser{{ownershipMethods entitlementId}}}}}}}}}}}}".format(self._get_api_host())
         d1 = await self._http_client.get(u1)
         try:
             return d1['data']['me']['ownedGameProducts']['items']
@@ -56,7 +56,7 @@ class EABackendClient:
             raise UnknownBackendResponse()
     
     async def get_offer(self, offer_id) -> Json:
-        u2 = "{}?query=query{{legacyOffers(offerIds: [\"{}\"], locale: \"en\"){{offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId installCheckOverride executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"en\"){{items{{name originOfferId baseItem{{title}} gameSlug}}}}}}".format(
+        u2 = "{}?query=query{{legacyOffers(offerIds: [\"{}\"], locale: \"DEFAULT\"){{offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId installCheckOverride executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"DEFAULT\"){{items{{id name originOfferId baseItem{{title}} gameSlug}}}}}}".format(
                 self._get_api_host(),
                 offer_id,
                 offer_id
@@ -64,21 +64,24 @@ class EABackendClient:
         u2 = u2.replace(' ', '%20').replace('+', '%20')
         response = await self._http_client.get(u2)
         try:
-            legacy_offer = response['data']['legacyOffers'][0] if response['data']['legacyOffers'] else {}
-            game_product = response['data']['gameProducts']['items'][0] if response['data']['gameProducts']['items'] else {}
-            
-            # Assurez-vous que la clé displayName existe
-            if 'displayName' not in legacy_offer and game_product and 'name' in game_product:
-                legacy_offer['displayName'] = game_product['name']
-            elif 'displayName' not in legacy_offer:
-                legacy_offer['displayName'] = f"Unknown Game ({offer_id})"
-                
-            # Assurez-vous que gameSlug est également disponible
-            if 'gameSlug' in game_product:
-                legacy_offer['gameSlug'] = game_product['gameSlug']
-                
-            return legacy_offer, game_product
-        except (ValueError, KeyError) as e:
+            legacy_offer = (response.get('data', {}).get('legacyOffers') or [{}])[0]
+            product = (response.get('data', {}).get('gameProducts', {}).get('items') or [])[0]
+
+            if 'FullGame' in legacy_offer.get('displayType', ''):
+                if 'displayName' not in legacy_offer and product:
+                    legacy_offer['displayName'] = product.get('name', f"Unknown Game ({offer_id})")
+
+                if 'gameSlug' in product:
+                    legacy_offer['gameSlug'] = product['gameSlug']
+
+                combined_data = legacy_offer.copy()
+                combined_data['game_product'] = product if product else {}
+
+                return combined_data
+            else:
+                logger.debug("Offer ID %s is not a full game, skipping", offer_id)
+                return {}
+        except (ValueError, KeyError, TypeError) as e:
             logger.exception("Can not parse backend response: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()
         
@@ -119,7 +122,7 @@ class EABackendClient:
             logger.exception("Can not parse achievements from backend response %s", repr(e))
             raise UnknownBackendResponse()
 
-    async def get_achievement_set(self, offer_id: OfferId, persona_id: str) -> str:
+    async def get_achievement_set(self, offer_id: OfferId, persona_id: str) -> Optional[str]:
         url = "{}?query=query{{achievements(offerId:\"{}\",playerPsd:\"{}\"){{id}}}}".format(self._get_api_host(), offer_id, persona_id)
         response = await self._http_client.get(url)
     
@@ -247,20 +250,25 @@ class EABackendClient:
                 time_delta = datetime.strptime(date, "%Y-%m-%dT%H:%M:%S.%fZ") - datetime(1970, 1, 1)
             except ValueError:
                 raise ValueError(f"time data '{date}' does not match with the expected format")
-                    
             return int(time_delta.total_seconds())
 
-
         try:
-            games = response["data"]["me"]["recentGames"]["items"]
+            me = response.get("data", {}).get("me", {})
+            recent_games = me.get("recentGames")
+            if not recent_games:
+                logger.info("no data in recentGames: %s", response)
+                return {}
+            items = recent_games.get("items", [])
+            if not items:
+                logger.info("No recent games found in the response: %s", response)
+                return {}
             return {
-                game["gameSlug"]: parse_last_session_end_date(game["lastSessionEndDate"])
-                for game in games
+                GameSlug(game["gameSlug"]): Timestamp(parse_last_session_end_date(game["lastSessionEndDate"]))
+                for game in items if "gameSlug" in game and "lastSessionEndDate" in game
             }
-        except (KeyError, ValueError) as e:
-            logger.exception("Can not parse backend response: %s", await response.text())
-            raise UnknownBackendResponse(e)
-
+        except Exception as e:
+            logger.exception("Can not parse backend response in get_lastplayed_games: %s", response)
+            return {}
 
     async def _get_active_subscription(self, sub_json) -> Optional[SubscriptionDetails]:
         def parse_timestamp(timestamp: str) -> Timestamp:
@@ -358,9 +366,9 @@ class EABackendClient:
                                     )
                                 )
             except (ValueError, KeyError) as e:
-                logger.exception("Can not parse backend response while getting subs games: %s, error %s", await res2.text(), repr(e))
+                logger.exception("Can not parse backend response while getting subs games: %s, error %s", games, repr(e))
                 raise UnknownBackendResponse()
-            return subscription_games  # Return the list of subscription games
+            return subscription_games
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse backend response while getting subs games: %s, error %s", await response.text(), repr(e))
             raise UnknownBackendResponse()

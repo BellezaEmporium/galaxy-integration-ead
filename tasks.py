@@ -5,7 +5,6 @@ import tempfile
 from shutil import rmtree, which, copy
 from distutils.dir_util import copy_tree
 
-
 from invoke import task
 from galaxy.tools import zip_folder_to_file
 
@@ -58,9 +57,6 @@ def build(c, output='output', ziparchive=None):
 
     print('--> Copying source files')
     copy_tree("src", output)
-    
-    print('--> Copying install.bat file')
-    copy("install.bat", output)
 
     if ziparchive is not None:
         print('--> Compressing to {}'.format(ziparchive))
@@ -79,6 +75,6 @@ def install(c):
 
 @task
 def pack(c):
-    output = "origin_" + MANIFEST['guid']
-    build(c, output=output, ziparchive='origin_v{}.zip'.format(MANIFEST['version']))
-    rmtree(output)
+    build(c, output="origin_" + MANIFEST['guid'], ziparchive='origin_v{}.zip'.format(MANIFEST['version']))
+    print('--> Removing {} directory'.format("origin_" + MANIFEST['guid']))
+    rmtree("origin_" + MANIFEST['guid'])
