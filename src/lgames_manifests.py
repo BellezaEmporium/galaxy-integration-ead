@@ -179,3 +179,269 @@ def get_install_location(base_key, regkey_path, part) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error accessing registry key {base_key}\\{regkey_path}: {str(e)}")
         return None
+
+def find_executable_in_dir(directory):
+    """Cherche un exécutable dans le dossier donné (retourne le premier .exe trouvé)."""
+    if not directory or not os.path.isdir(directory):
+        return None
+    for entry in os.listdir(directory):
+        if entry.lower().endswith('.exe'):
+            return os.path.join(directory, entry)
+    return None
+
+def update_local_games(self):
+    local_games = []
+    running_exes = set(os.path.basename(exe).lower() for _, exe in process_iter() if exe)
+
+    for offer_id, game_data in self._offer_id_cache.items():
+        if "displayName" in game_data:
+            logger.info(f"Checking local game status for {offer_id}, game name is {game_data.get('displayName')}")
+            state = LocalGameState.None_
+            install_path = None
+
+            path = game_data.get("installCheckOverride") or game_data.get("executePathOverride")
+            if path:
+                base_path = get_install_path_from_xml(game_data, path)
+                if base_path:
+                    exe = find_executable_in_dir(base_path)
+                    install_path = exe or base_path
+                else:
+                    install_path = path
+
+            if install_path and os.path.exists(install_path):
+                state = LocalGameState.Installed
+                exe_name = os.path.basename(install_path).lower()
+                if exe_name in running_exes:
+                    state |= LocalGameState.Running
+                logger.info(f"{offer_id} is installed at {install_path}")
+
+            local_games.append(LocalGame(offer_id, state))
+        else:
+            continue
+
+    return local_games
+
+def local_game_status(self):
+    '''
+    returns list of changed games (added, removed, or changed)
+    updated local_games property
+    '''
+    new_local_games = update_local_games(self)
+    notify_list = get_state_changes(self._local_games, new_local_games)
+    self._local_games = new_local_games
+
+    return notify_list
+
+def get_install_path_from_xml(game_data, xml_path):
+        """Extract the installation path from the XML file, parsing DiPManifest for launcher info."""
+        
+        try:
+            # Always look for __Installer/installerdata.xml relative to the base path
+            if xml_path.startswith('[') and ']' in xml_path:
+                reg_path, xml_relative_path = xml_path.split(']', 1)
+                reg_key = reg_path[1:]  # Remove the [ at the beginning
+                
+                # Divide the registry key into its components
+                reg_components = reg_key.split('\\')
+                if len(reg_components) < 3:
+                    logger.error(f"Invalid registry key format: {xml_path}")
+                    return None
+                
+                try:
+                    hive_name = reg_components[0]
+                    # Map registry hive names to their constants
+                    hive_mapping = {
+                        'HKEY_LOCAL_MACHINE': winreg.HKEY_LOCAL_MACHINE,
+                        'HKEY_CURRENT_USER': winreg.HKEY_CURRENT_USER,
+                        'HKEY_CLASSES_ROOT': winreg.HKEY_CLASSES_ROOT,
+                        'HKEY_USERS': winreg.HKEY_USERS,
+                        'HKEY_CURRENT_CONFIG': winreg.HKEY_CURRENT_CONFIG
+                    }
+                    
+                    if hive_name not in hive_mapping:
+                        logger.error(f"Unknown registry hive: {hive_name}")
+                        return None
+                    
+                    hive = hive_mapping[hive_name]
+                    value_name = reg_components[-1]
+                    key_path = "\\".join(reg_components[1:-1])
+                    
+                    # Get the base installation location from the registry
+                    base_install_location = get_install_location(hive, key_path, value_name)
+                    
+                    if base_install_location:
+                        # Always try to find __Installer/installerdata.xml
+                        full_xml_path = os.path.join(base_install_location, "__Installer", "installerdata.xml")
+                        if not os.path.exists(full_xml_path):
+                            # Fallback to the original XML path if specified differently
+                            full_xml_path = os.path.join(base_install_location, xml_relative_path)
+                        
+                        return parse_installerdata_xml(game_data, full_xml_path, base_install_location)
+                except Exception as e:
+                    logger.error(f"Error processing registry path: {e}")
+                    return None
+            elif os.path.exists(xml_path):
+                base_install_location = os.path.dirname(xml_path)
+                return parse_installerdata_xml(game_data, xml_path, base_install_location)
+            else:
+                # Try to find __Installer/installerdata.xml in the path
+                if os.path.isdir(xml_path):
+                    installer_xml = os.path.join(xml_path, "__Installer", "installerdata.xml")
+                    if os.path.exists(installer_xml):
+                        return parse_installerdata_xml(game_data, installer_xml, xml_path)                
+                    return xml_path  # Return the path as-is if no XML found
+                
+        except Exception as e:
+            logger.info(f"Error while parsing installerdata.xml file: {e}")
+
+        return None
+
+def parse_installerdata_xml(game_data, xml_path, base_install_location):
+    """Parse installerdata.xml to find the correct launcher based on trial/demo detection and system architecture."""
+    import xml.etree.ElementTree as ET
+    import platform
+    
+    try:
+        if not os.path.exists(xml_path):
+            logger.debug(f"XML file not found: {xml_path}")
+            return base_install_location
+        
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+
+
+        if root.tag != 'DiPManifest':
+            logger.error(f"Potentially old game {game_data.get('displayName', '') or game_data.get('i18n', {}).get('displayName', '')}, not a DiPManifest")
+            install_location = game_data.get('installCheckOverride') or game_data.get('executePathOverride')
+            if install_location.endswith('.exe'):
+                # Parse registry path like [HKEY_LOCAL_MACHINE\SOFTWARE\EA Games\Battlefield 4\Install Dir]BFLauncher.exe
+                reg_part, exe_part = install_location.split(']', 1)
+                reg_key = reg_part[1:]  # Remove the [
+                
+                # Split registry key into components
+                reg_components = reg_key.split('\\')
+                if len(reg_components) >= 3:
+                    hive_name = reg_components[0]
+                    value_name = reg_components[-1]
+                    key_path = "\\".join(reg_components[1:-1])
+                    
+                    hive = getattr(winreg, hive_name)
+                    return  get_install_location(hive, key_path, value_name)
+                else:
+                    logger.error(f"Invalid registry key format: {install_location}")
+                    return base_install_location        # Look for runtime/launcher elements
+        launchers = root.findall(".//runtime/launcher")
+        
+        if not launchers:
+            logger.debug(f"No launcher elements found in {xml_path}")
+            return base_install_location
+        
+        # Detect if this is a Demo/Trial game by checking displayName
+        display_name = game_data.get('displayName', '').lower() or game_data.get('i18n', {}).get('displayName', '').lower()
+        is_trial_game = 'demo' in display_name or 'trial' in display_name
+        
+        # Detect system architecture
+        is_64bit = platform.machine().endswith('64')
+        
+        # Find the appropriate launcher
+        selected_launcher = None
+        fallback_launcher = None
+        
+        for launcher in launchers:
+            trial_attr = launcher.get('trial', '0')
+            is_trial_launcher = trial_attr == '1'
+            requires_64bit = launcher.get('requires64BitOS', '0') == '1'
+            
+            # Check if this launcher matches trial requirements
+            trial_match = (is_trial_game and is_trial_launcher) or (not is_trial_game and not is_trial_launcher)
+            
+            # Check if this launcher matches architecture requirements
+            arch_match = (is_64bit and requires_64bit) or (not requires_64bit)
+            
+            if trial_match and arch_match:
+                selected_launcher = launcher
+                break
+            elif trial_match:
+                # Keep as fallback if trial matches but architecture doesn't
+                fallback_launcher = launcher
+        
+        # Use fallback if no perfect match
+        if selected_launcher is None and fallback_launcher is not None:
+            selected_launcher = fallback_launcher
+            logger.debug(f"Using fallback launcher due to architecture mismatch")
+        
+        # If still no match, take the first non-trial launcher for non-trial games
+        if selected_launcher is None and launchers and not is_trial_game:
+            for launcher in launchers:
+                trial_attr = launcher.get('trial', '0')
+                if trial_attr != '1':
+                    selected_launcher = launcher
+                    break
+        
+        # Last resort: take the first launcher
+        if selected_launcher is None and launchers:
+            selected_launcher = launchers[0]
+            logger.debug(f"No specific launcher match found, using first available launcher")
+        
+        if selected_launcher is not None:
+            # Look for filePath element within the launcher
+            file_path_element = selected_launcher.find('filePath')
+            launcher_path = None
+            
+            if file_path_element is not None and file_path_element.text:
+                launcher_path = file_path_element.text.strip()
+            elif selected_launcher.text:
+                # Fallback to launcher text if no filePath element
+                launcher_path = selected_launcher.text.strip()
+            
+            if launcher_path:
+                # Handle registry-based paths
+                if launcher_path.startswith('[') and ']' in launcher_path:
+                    try:
+                        # Parse registry path like [HKEY_LOCAL_MACHINE\SOFTWARE\EA Games\Battlefield 4\Install Dir]BFLauncher.exe
+                        reg_part, exe_part = launcher_path.split(']', 1)
+                        reg_key = reg_part[1:]  # Remove the [
+                        
+                        # Split registry key into components
+                        reg_components = reg_key.split('\\')
+                        if len(reg_components) >= 3:
+                            hive_name = reg_components[0]
+                            value_name = reg_components[-1]
+                            key_path = "\\".join(reg_components[1:-1])
+                            
+                            hive = getattr(winreg, hive_name)
+                            install_dir = get_install_location(hive, key_path, value_name)
+                            
+                            if install_dir:
+                                full_launcher_path = os.path.join(install_dir, exe_part)
+                            else:
+                                # Fallback to base installation location
+                                full_launcher_path = os.path.join(base_install_location, exe_part)
+                        else:
+                            logger.error(f"Invalid registry key format: {launcher_path}")
+                            return base_install_location
+                    except Exception as e:
+                        logger.error(f"Failed to parse registry-based launcher path: {e}")
+                        return base_install_location
+                else:
+                    # Convert relative path to absolute path
+                    if not os.path.isabs(launcher_path):
+                        full_launcher_path = os.path.join(base_install_location, launcher_path)
+                    else:
+                        full_launcher_path = launcher_path
+                
+                if os.path.exists(full_launcher_path):
+                    logger.debug(f"Found launcher at: {full_launcher_path}")
+                    return full_launcher_path
+                else:
+                    logger.debug(f"Launcher path does not exist: {full_launcher_path}")
+        
+        # If no valid launcher found, return the base installation directory
+        return base_install_location
+        
+    except ET.ParseError as e:
+        logger.error(f"Failed to parse XML file {xml_path}: {e}")
+        return base_install_location
+    except Exception as e:
+        logger.error(f"Error parsing installerdata.xml: {e}")
+        return base_install_location
