@@ -5,8 +5,16 @@ Forked from FriendsOfGalaxy.
 
 # Information
 
-You are currently on the "juno_api" branch, which is a rewritten version of that same plugin, using the new Juno API for EA Desktop.
-Achievements, game play time and available subscription games should be up to date on this specific version.
+This plugin is made to work with the new EA Desktop program. Since Origin has sunsetted in April 17th, 2025, you'll only be able to use this version of the plugin (see the branch name).
+If you're migrating from Origin to EA, you might encounter an offer conflict, since the old offer structure is different to the one we scrape today in the EA API.
+
+If you encounter such issues (like games not showing up, overall quacks talking about displayName or such stuff), you need to force the cache update.
+To do so, you can force the cache update by modifying lines 340-347 of the plugin.py file, and replace them with the following: :
+
+```
+for offer_id in offer_ids:
+  missing_offers.append(offer_id)
+```
 
 ## Disclaimer
 
