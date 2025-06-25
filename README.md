@@ -9,12 +9,26 @@ This plugin is made to work with the new EA Desktop program. Since Origin has su
 If you're migrating from Origin to EA, you might encounter an offer conflict, since the old offer structure is different to the one we scrape today in the EA API.
 
 If you encounter such issues (like games not showing up, overall quacks talking about displayName or such stuff), you need to force the cache update.
-To do so, you can force the cache update by modifying lines 340-347 of the plugin.py file, and replace them with the following: :
+To do so, search for a function called "get_offers". The function should begin like this :
 
 ```
 for offer_id in offer_ids:
-  missing_offers.append(offer_id)
+    cached_offer = self._offer_id_cache.get(offer_id)
+    if isinstance(cached_offer, dict):
+        offers[offer_id] = cached_offer
+    else:
+        missing_offers.append(offer_id)
 ```
+
+Replace these lines with this (and keep a backup of the lines earlier on) :
+
+```
+for offer_id in offer_ids:
+    missing_offers.append(offer_id)
+```
+
+Make sure the line after the for function is properly indented, as the plugin wouldn't work without that condition met.
+Load Galaxy afterwards, and reload the plugin. Once you've confirmed the games are now properly updated, you can reinstate the lines back.
 
 ## Disclaimer
 
