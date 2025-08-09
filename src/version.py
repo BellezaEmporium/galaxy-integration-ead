@@ -1,7 +1,15 @@
-__version__ = "0.44.3"
+__version__ = "0.44.4"
 
 __changelog__ = {
     "unreleased":"""""",
+    "0.44.4":
+    """
+        - plugin has been reworked entirely for better maintainability
+        - fixes game discovery, fixes local game detection
+        - added background prefetching of offers for better local game detection
+        - improved error handling during offer prefetching
+        - improved overall performance and responsiveness
+    """,
     "0.44.3":
     """
         - made the authentication process go snappier thanks to a hw cache for the pc_sign
