@@ -39,8 +39,14 @@ class AuthenticatedHttpClient(HttpClient):
         self._refresh_token = None
         self._last_access_token_success = None
         self._save_lats_callback = None
+        self._save_tokens_callback = None
         self._token_lock = asyncio.Lock()
-        
+        self._access_token_expires_at = None
+        self._static_headers = {
+            "User-Agent": "EAApp/PC/13.468.0.5981",
+            "x-client-id": "EAX-JUNO-CLIENT"
+        }
+
         timeout = ClientTimeout(total=DEFAULT_TIMEOUT)
         connector = aiohttp.TCPConnector(
             limit=20,
@@ -48,25 +54,31 @@ class AuthenticatedHttpClient(HttpClient):
             enable_cleanup_closed=True,
             ttl_dns_cache=300
         )
-        
+
         self._session = ClientSession(
             cookie_jar=self._cookie_jar,
             timeout=timeout,
             connector=connector,
             headers=self._get_default_headers()
         )
-        
+
         self._request_cache = {}
         self._cache_timestamps = {}
         self._cache_expiry = 300
 
+    async def authenticate(self, cookies: Optional[dict] = None):
+        """Compatibility method: optionally set cookies. Real auth happens via OAuth code exchange.
+        """
+        try:
+            if cookies:
+                self._cookie_jar.update_cookies(cookies)
+        except Exception as e:
+            logger.warning(f"Failed to apply cookies during authenticate(): {e}")
+        return None
+
     def _get_default_headers(self):
         """Common headers for all requests"""
-        headers = {
-            "User-Agent": "EAApp/PC/13.468.0.5981",
-            "x-client-id": "EAX-JUNO-CLIENT"
-        }
-        
+        headers = self._static_headers.copy()
         if self._access_token:
             headers["Authorization"] = f"Bearer {self._access_token}"
             
@@ -190,7 +202,28 @@ class AuthenticatedHttpClient(HttpClient):
                 
                 self._access_token = response_data["access_token"]
                 self._refresh_token = response_data["refresh_token"]
+                # token lifetime
+                expires_in = response_data.get("expires_in")
+                now = int(time.time())
+                if isinstance(expires_in, (int, float)):
+                    self._access_token_expires_at = now + int(expires_in) - 60  # 60s slack
+                else:
+                    # Fallback: parse JWT 'exp'
+                    try:
+                        parts = self._access_token.split('.')
+                        if len(parts) >= 2:
+                            import base64, json
+                            payload = base64.urlsafe_b64decode(parts[1] + '==').decode('utf-8')
+                            exp = json.loads(payload).get('exp')
+                            if isinstance(exp, (int, float)):
+                                self._access_token_expires_at = int(exp) - 60
+                    except Exception:
+                        self._access_token_expires_at = None
                 self._save_lats()
+                
+                # Save tokens via callback if available
+                if self._save_tokens_callback:
+                    self._save_tokens_callback(self._access_token, self._refresh_token)
                 
                 logger.info("Successfully exchanged code for tokens")
                 return self._access_token, self._refresh_token
@@ -226,8 +259,29 @@ class AuthenticatedHttpClient(HttpClient):
                 if "access_token" in data and "refresh_token" in data:
                     self._access_token = data["access_token"]
                     self._refresh_token = data["refresh_token"]
+                    # token lifetime
+                    expires_in = data.get("expires_in")
+                    now = int(time.time())
+                    if isinstance(expires_in, (int, float)):
+                        self._access_token_expires_at = now + int(expires_in) - 60
+                    else:
+                        try:
+                            parts = self._access_token.split('.')
+                            if len(parts) >= 2:
+                                import base64, json
+                                payload = base64.urlsafe_b64decode(parts[1] + '==').decode('utf-8')
+                                exp = json.loads(payload).get('exp')
+                                if isinstance(exp, (int, float)):
+                                    self._access_token_expires_at = int(exp) - 60
+                        except Exception:
+                            self._access_token_expires_at = None
                     logger.info("Successfully refreshed the access token.")
                     self._save_lats()
+                    
+                    # Save tokens via callback if available
+                    if self._save_tokens_callback:
+                        self._save_tokens_callback(self._access_token, self._refresh_token)
+                    
                     return self._access_token, self._refresh_token
                 else:
                     raise BackendError("Failed to refresh token: Invalid response")
@@ -251,6 +305,10 @@ class AuthenticatedHttpClient(HttpClient):
 
     def set_save_lats_callback(self, callback):
         self._save_lats_callback = callback
+
+    def set_save_tokens_callback(self, callback):
+        """Set callback to save access and refresh tokens"""
+        self._save_tokens_callback = callback
 
     def load_lats_from_cache(self, value: Optional[str]):
         self._last_access_token_success = int(value) if value else None
@@ -287,3 +345,10 @@ class AuthenticatedHttpClient(HttpClient):
     def is_authenticated(self):
         """Return True if the user is authenticated, False otherwise"""
         return self._access_token is not None
+
+    def is_access_token_valid(self) -> bool:
+        if not self._access_token:
+            return False
+        if self._access_token_expires_at is None:
+            return True
+        return time.time() < self._access_token_expires_at

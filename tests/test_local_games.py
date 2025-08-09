@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from galaxy.api.types import LocalGame, LocalGameState
 
-from local_games import LocalGames, get_state_changes
+from lgames_manifests import get_state_changes
 
 
 def _sorted_games(games):

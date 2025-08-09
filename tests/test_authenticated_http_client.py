@@ -4,7 +4,7 @@ import pytest
 from galaxy.api.errors import AccessDenied, BackendNotAvailable
 from galaxy.unittest.mock import AsyncMock
 
-from backend import AuthenticatedHttpClient
+from http_client import AuthenticatedHttpClient
 
 
 

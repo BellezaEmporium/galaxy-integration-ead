@@ -1,20 +1,21 @@
 import asyncio
-import os
-import pathlib
 import json
 import logging
+from operator import is_
+import pathlib
 import platform
+import re
 import subprocess
 import sys
 import time
 import webbrowser
 from functools import partial
-from typing import Any, Callable, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable
-import winreg
+from typing import Any, Callable, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable, Tuple
+from urllib.parse import urlparse, parse_qs
 
 from galaxy.api.consts import LicenseType, Platform
 from galaxy.api.errors import (
-    AccessDenied, AuthenticationRequired, BackendError, InvalidCredentials, UnknownBackendResponse, UnknownError
+    AuthenticationRequired, BackendError, UnknownBackendResponse, UnknownError
 )
 from galaxy.api.plugin import create_and_run_plugin, Plugin
 from galaxy.api.types import (
@@ -24,15 +25,17 @@ from galaxy.api.types import (
 
 from backend import MasterTitleId, OfferId, EABackendClient, Timestamp, AchievementSet, Json
 from http_client import AuthenticatedHttpClient
-from lgames_manifests import get_install_location, get_state_changes, local_game_status, parse_total_size, process_iter, get_install_path_from_xml, update_local_games
+from lgames_manifests import (
+    RegistryManager,
+    local_game_status,
+    parse_total_size,
+    update_local_games,
+    parse_registry_expression,
+    resolve_registry_expression,
+)
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
-from pcsign_hash import preload_pc_sign_cache, generate_pc_sign_fast
-from urllib.parse import urlparse, parse_qs
-import re
-import base64
-import json
-
+from pcsign_hash import preload_pc_sign_cache, generate_pc_sign_fast, extract_user_info_from_jwt
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,7 @@ def is_windows():
     return platform.system().lower() == "windows"
 
 LOCAL_GAMES_CACHE_VALID_PERIOD = 5 * 60  # 5 minutes
+
 def regex_pattern(regex):
     return ".*" + re.escape(regex) + ".*"
 
@@ -52,7 +56,7 @@ r'''
 MultiplayerId = NewType("MultiplayerId", str)
 GameId = NewType("GameId", str)  # eg. Origin.OFR:12345 or Origin.OFR:12345@epic
 GameSlug = NewType("GameSlug", str)  # eg. "battlefield-1"
-# but since EA Desktop has changed their launch format, we need to use the contentId to launch the games (eg: "1026023" for Battlefield 1)
+
 
 class AchievementsImportContext(NamedTuple):
     owned_games: Dict[GameSlug, AchievementSet]
@@ -64,72 +68,210 @@ class GameLibrarySettingsContext(NamedTuple):
     hidden: Set[OfferId]
 
 
-class EAPlugin(Plugin):
-    def __init__(self, reader, writer, token):
-        super().__init__(Platform.Origin, __version__, reader, writer, token)
+class AuthenticationManager:
+    """Handles all authentication-related functionality."""
+    
+    def __init__(self, http_client: AuthenticatedHttpClient, backend_client: EABackendClient):
+        self.http_client = http_client
+        self.backend_client = backend_client
         self._user_id = None
         self._persona_id = None
-        self._access_token = None
-        self._refresh_token = None
+    
+    @property
+    def user_id(self) -> Optional[str]:
+        return self._user_id
+    
+    @property
+    def persona_id(self) -> Optional[str]:
+        return self._persona_id
+    
+    def is_authenticated(self) -> bool:
+        return self.http_client.is_authenticated()
+    
+    def check_authenticated(self):
+        """Raises AuthenticationRequired if not authenticated."""
+        if not self.is_authenticated():
+            raise AuthenticationRequired("User not authenticated")
+    
+    async def begin_auth_flow(self) -> NextStep:
+        """Start new authentication flow."""
+        try:
+            pc_sign = generate_pc_sign_fast()
+        except Exception as e:
+            logger.error(f"Failed to generate PC sign: {e}")
+            pc_sign = ""
+        
+        params = {
+            "window_title": "Login to EA Desktop",
+            "window_width": 495 if is_windows() else 480,
+            "window_height": 850 if is_windows() else 825,
+            "start_uri": f"https://accounts.ea.com/connect/auth"
+                         f"?response_type=code&client_id=JUNO_PC_CLIENT&display=junoClient/login"
+                         f"&redirect_uri=qrc:///html/login_successful.html"
+                         f"&locale=en_US&pc_sign={pc_sign}",
+            "end_uri_regex": "qrc:/html/login_successful.html.*"
+        }
+        return NextStep("web_session", params, js=JS)
+    
+    async def authenticate_with_code(self, code: str) -> Tuple[str, str, str]:
+        """Authenticate using authorization code and return user info."""
+        if code:
+            await self.http_client._exchange_auth_code_for_token(code)
+        else:
+            raise AuthenticationRequired("No authorization code provided")
+        
+        return await self.get_identity()
+    
+    async def get_identity(self) -> Tuple[str, str, str]:
+        """Get user identity from JWT token or backend."""
+        try:
+            # Try to extract from JWT token first
+            if hasattr(self.http_client, '_access_token') and self.http_client._access_token:
+                try:
+                    logger.debug("Attempting to get identity from JWT extraction")
+                    self._user_id, self._persona_id, user_name = extract_user_info_from_jwt(self.http_client._access_token)
+                    logger.info(f"Identity successfully obtained from JWT extraction: {user_name}")
+                    return self._user_id, self._persona_id, user_name
+                except Exception as e:
+                    logger.warning(f"Failed to extract from JWT: {e}")
+            
+            # Fallback to backend
+            self._user_id, self._persona_id, user_name = await self.backend_client.get_identity()
+            logger.info(f"Identity successfully obtained from backend: {user_name}")
+            return self._user_id, self._persona_id, user_name
+            
+        except Exception as e:
+            logger.error(f"Failed to get identity: {e}")
+            raise AuthenticationRequired("Failed to get identity")
 
-        def auth_lost():
-            self.lost_authentication()
 
-        self._http_client = AuthenticatedHttpClient()
-        self._http_client.set_auth_lost_callback(auth_lost)
-        self._http_client.set_cookies_updated_callback(self._update_stored_cookies)
-        self._backend_client = EABackendClient(self._http_client)
-        self._persistent_cache_updated = False
+class CacheManager:
+    """Manages persistent caching for the plugin."""
+    
+    def __init__(self, plugin_instance):
+        self.plugin = plugin_instance
+        self._game_time_cache = {}
+        self._offer_id_cache = {}
+    
+    @property
+    def game_time_cache(self) -> Dict[OfferId, GameTime]:
+        return self._game_time_cache
+    
+    @game_time_cache.setter 
+    def game_time_cache(self, value: Dict[OfferId, GameTime]):
+        self._game_time_cache = value
+        self.plugin.push_cache()
+    
+    @property
+    def offer_id_cache(self) -> Dict[OfferId, Json]:
+        return self._offer_id_cache
+    
+    @offer_id_cache.setter
+    def offer_id_cache(self, value: Dict[OfferId, Json]):
+        self._offer_id_cache = value
+        self.plugin.push_cache()
+    
+    def get_offer_from_cache(self, offer_id: OfferId) -> Optional[Json]:
+        return self._offer_id_cache.get(offer_id)
+    
+    def cache_offers(self, offers: Dict[OfferId, Json]):
+        """Cache multiple offers."""
+        self._offer_id_cache.update(offers)
+        self.plugin.push_cache()
 
-        self._local_games = {}
+
+class LocalGameManager:
+    """Manages local game detection and status updates."""
+    
+    def __init__(self, cache_manager: CacheManager):
+        self.cache_manager = cache_manager
+        self._local_games = []
         self._local_games_last_update = 0
         self._local_games_update_in_progress = False
+    
+    def update_local_games(self):
+        """Update local games list."""
+        return update_local_games(self)
+    
+    def get_local_game_status(self):
+        """Get local game status changes."""
+        return local_game_status(self)
+    
+    @property
+    def _offer_id_cache(self):
+        """Provide interface expected by lgames_manifests functions."""
+        return self.cache_manager.offer_id_cache
+    
+    def should_update_cache(self) -> bool:
+        """Check if local games cache should be updated."""
+        return (
+            not self._local_games_update_in_progress and
+            time.time() - self._local_games_last_update >= LOCAL_GAMES_CACHE_VALID_PERIOD
+        )
+
+
+class EAPlugin(Plugin):
+    """Main EA Desktop plugin class with simplified, modular architecture."""
+    
+    def __init__(self, reader, writer, token):
+        super().__init__(Platform.Origin, __version__, reader, writer, token)
+        
+        # Initialize HTTP client and backend
+        self._http_client = AuthenticatedHttpClient()
+        self._http_client.set_auth_lost_callback(lambda: self.lost_authentication())
+        self._http_client.set_cookies_updated_callback(self._update_stored_cookies)
+        self._http_client.set_save_lats_callback(self._save_lats)
+        self._http_client.set_save_tokens_callback(self._store_tokens)
+        
+        self._backend_client = EABackendClient(self._http_client)
+        
+        # Initialize managers
+        self._auth_manager = AuthenticationManager(self._http_client, self._backend_client)
+        self._cache_manager = CacheManager(self)
+        self._local_game_manager = LocalGameManager(self._cache_manager)
+        
+        self._persistent_cache_updated = False
+        self._last_offers_prefetch = 0
+
+    async def _prefetch_offers_background(self):
+        try:
+            # Throttle prefetch to avoid hammering right after startup
+            now = int(time.time())
+            if now - self._last_offers_prefetch < 60:
+                return
+            # Only if authenticated and token is valid
+            if not self._auth_manager.is_authenticated() or not self._http_client.is_access_token_valid():
+                return
+            # let the session settle a bit after auth/login
+            await asyncio.sleep(2)
+            entitlements = await self._backend_client.get_entitlements()
+            offer_ids: List[OfferId] = []
+            for e in entitlements:
+                origin_offer_id = e.get("originOfferId")
+                if isinstance(origin_offer_id, str) and origin_offer_id:
+                    offer_ids.append(OfferId(origin_offer_id))
+            if offer_ids:
+                await self._get_offers(offer_ids)
+            self._last_offers_prefetch = now
+        except Exception as e:
+            logger.debug(f"Background offers prefetch failed: {e}")
 
     @property
     def _game_time_cache(self) -> Dict[OfferId, GameTime]:
-        cache = self.persistent_cache.get("game_time")
-        if isinstance(cache, str):
-            try:
-                cache = json.loads(cache)
-            except Exception:
-                cache = {}
-        if cache is None:
-            cache = {}
-        result = {}
-        for k, v in cache.items():
-            if isinstance(v, GameTime):
-                result[k] = v
-            elif isinstance(v, dict):
-                result[k] = GameTime(v["game_id"], v["time_played"], v.get("last_played_time"))
-        return result
+        return self._cache_manager.game_time_cache
 
     @_game_time_cache.setter
     def _game_time_cache(self, value: Dict[OfferId, GameTime]):
-        serializable = {k: v.__dict__ for k, v in value.items()}
-        self.persistent_cache["game_time"] = json.dumps(serializable)
+        self._cache_manager.game_time_cache = value
 
     @property
     def _offer_id_cache(self) -> Dict[OfferId, Json]:
-        cache = self.persistent_cache.get("offers")
-        if isinstance(cache, str):
-            try:
-                cache = json.loads(cache)
-            except Exception:
-                cache = {}
-        if cache is None:
-            cache = {}
-        return cache
+        return self._cache_manager.offer_id_cache
 
     @_offer_id_cache.setter
     def _offer_id_cache(self, value: Dict[OfferId, Json]):
-        self.persistent_cache["offers"] = json.dumps(value)
-    
-    def _update_local_games(self):
-        return update_local_games(self)
+        self._cache_manager.offer_id_cache = value
 
-    def _local_game_status(self):
-        return local_game_status(self)
-        
     async def shutdown(self):
         await self._http_client.close()
 
@@ -137,144 +279,84 @@ class EAPlugin(Plugin):
         self.handle_local_game_update_notifications()    
     
     def _check_authenticated(self):
-        if not self._http_client.is_authenticated():
-            logger.exception("Plugin not authenticated")
-            raise AuthenticationRequired()
+        self._auth_manager.check_authenticated()
     
     async def authenticate(self, stored_credentials):
         if stored_credentials:
-            self._refresh_token = stored_credentials.get('refresh_token')
-            if self._refresh_token:
-                try:
-                    # Force refresh the token every time for fresh session
-                    logger.info("Authenticating with stored credentials")
-                    await self._force_refresh_access_token()
-                    identity_result = await self.get_identity()
-                    if identity_result is None:
-                        logger.error("get_identity returned None, starting new authentication flow")
-                        raise AuthenticationRequired("Failed to get identity")
-                    user_id, persona_id, user_name = identity_result
-                    logger.info(f"Successfully authenticated {user_name} with stored credentials")
-                    self._user_id = user_id
-                    self._persona_id = persona_id
-                    return Authentication(self._user_id, user_name)
-                except Exception as e:
-                    logger.error(f"Failed to refresh: {str(e)}")
-                    # Clear invalid refresh token
-                    self._refresh_token = None
+            try:
+                cookies = stored_credentials.get("cookies")
+                if cookies:
+                    self._http_client._cookie_jar.update_cookies(cookies)
+                
+                access_token = stored_credentials.get("access_token")
+                refresh_token = stored_credentials.get("refresh_token")
+
+                # Load tokens into http client
+                if access_token:
+                    self._http_client._access_token = access_token
+                if refresh_token:
+                    self._http_client._refresh_token = refresh_token
+
+                # If we have a valid access token, try to proceed without refresh
+                if access_token and self._http_client.is_access_token_valid():
+                    try:
+                        user_id, persona_id, user_name = await self._auth_manager.get_identity()
+                        try:
+                            asyncio.create_task(self._prefetch_offers_background())
+                        except Exception:
+                            pass
+                        return Authentication(user_id, user_name)
+                    except Exception as e:
+                        logger.info(f"Stored access token may be invalid, will attempt refresh if possible: {e}")
+
+                # If we have a refresh token, attempt to refresh
+                if refresh_token:
+                    try:
+                        await self._force_refresh_access_token()
+                        user_id, persona_id, user_name = await self._auth_manager.get_identity()
+                        try:
+                            asyncio.create_task(self._prefetch_offers_background())
+                        except Exception:
+                            pass
+                        return Authentication(user_id, user_name)
+                    except Exception as e:
+                        logger.info(f"Stored refresh token failed, starting fresh auth: {e}")
+                        
+            except Exception as e:
+                logger.error(f"Error processing stored credentials: {e}")
         
         # Start new authentication flow
         logger.info("Starting new authentication flow")
-        return await self._begin_auth_flow()
+        return await self._auth_manager.begin_auth_flow()
 
-    async def _begin_auth_flow(self):
-        try:
-            pc_sign = generate_pc_sign_fast()
-        except Exception as e:
-            logger.error(f"Failed to generate PC_Sign: {e}")
-            try:
-                logger.info("Retrying PC_Sign generation...")
-                from pcsign_hash import PCSign
-                pc_sign = PCSign().generate_pc_sign()
-            except Exception as e2:
-                logger.error(f"Fallback PC_Sign generation also failed: {e2}")
-                raise AuthenticationRequired(f"Unable to generate PC_Sign: {e}")
-        
-        params = {
-            "window_title": "Login to EA Desktop",
-            "window_width": 495 if is_windows() else 480,
-            "window_height": 850 if is_windows() else 825,
-            "start_uri": "https://accounts.ea.com/connect/auth"
-                        "?response_type=code&client_id=JUNO_PC_CLIENT&display=junoClient/login"
-                        "&redirect_uri=qrc:///html/login_successful.html"
-                        "&locale=en_US&pc_sign={}".format(pc_sign),
-            "end_uri_regex": "qrc:/html/login_successful.html.*"
-        }
-        return NextStep("web_session", params, js=JS)
-    
-    async def get_identity(self):
-        try:
-            if not self._access_token:
-                logger.error("Access token not set.")
-                raise AccessDenied("No access token obtained")
-
-            # JWT tokens have 3 parts separated by dots: header.payload.signature
-            token_parts = self._access_token.split('.')
-            if len(token_parts) >= 2:
-                try: 
-                    # Decode the payload (second part)
-                    payload = token_parts[1]
-                    # Add padding if needed for base64 decoding
-                    payload += '=' * (4 - len(payload) % 4)
-                    decoded_payload = base64.b64decode(payload)
-                    token_data = json.loads(decoded_payload)
-                    
-                    if "nexus" in token_data:
-                        token = token_data["nexus"]
-                        psif = token.get('psif')
-                        if not psif or not isinstance(psif, list):
-                            logger.error("Invalid token format: 'psif' is not a list")
-                            raise AuthenticationRequired("Invalid token format")
-                        
-                        # Extract user information from token
-                        self._user_id = token['pid'] # user id
-                        self._persona_id = psif[0]['id']  # persona id
-                        user_name = psif[0]['dis']  # user name
-                        
-                        logger.info(f"Identity successfully obtained from JWT token.")
-                        return self._user_id, self._persona_id, user_name
-                    else:
-                        logger.warning("'nexus' key not found in token, falling back to backend method")
-                        # Fall back to getting identity from backend if JWT decode fails
-                        try:
-                            user_id, persona_id, user_name = await self._backend_client.get_identity()
-                            self._user_id = user_id
-                            self._persona_id = persona_id
-                            logger.info(f"Identity successfully obtained from backend: {user_name}")
-                            return self._user_id, self._persona_id, user_name
-                        except Exception as e:
-                            logger.error(f"Both methods (JWT & backend) failed: {e}")
-                            raise AuthenticationRequired("Failed to get identity from both methods")
-                        
-                except (ValueError, json.JSONDecodeError, KeyError) as e:
-                    logger.warning(f"Failed to decode JWT token: {e}, falling back to backend method.")
-                    
-        except Exception as e:
-            logger.error(f"Something happened while trying to fetch token: {e}")
-            raise AuthenticationRequired("Couldn't fetch token")
-        
     async def _force_refresh_access_token(self):
         try:
-            if not self._refresh_token:
+            if not self._http_client._refresh_token:
                 raise AuthenticationRequired("No refresh token available")
-            self._access_token, self._refresh_token = await self._http_client._refresh_access_token(self._refresh_token)
-            self.store_credentials({
-                'refresh_token': self._refresh_token
-            })
+            await self._http_client._refresh_access_token(self._http_client._refresh_token)
         except AuthenticationRequired:
-            logger.warning("Authentication required, starting new authentication flow")
-            self.store_credentials({})
-            self._refresh_token = None
-            self._access_token = None
-            raise AuthenticationRequired("Token refresh failed, re-authentication required")        
+            self.lost_authentication()
+            raise
         except Exception as e:
-            logging.error(f"Failed to refresh token: {e}")
-            raise AuthenticationRequired()
+            logger.error(f"Failed to refresh access token: {e}")
+            self.lost_authentication()
+            raise AuthenticationRequired("Failed to refresh access token")
+    # Tokens are persisted via http client callback to avoid duplicates
 
     def _store_tokens(self, access_token, refresh_token):
-        # Préserver les cookies existants lors du stockage des tokens
         current_credentials = self.persistent_cache.get("credentials", {})
         if isinstance(current_credentials, str):
-            try:
-                current_credentials = json.loads(current_credentials)
-            except:
-                current_credentials = {}
+            current_credentials = {}
         
         credentials = current_credentials.copy() if current_credentials else {}
-        credentials.update({
-            "access_token": access_token,
-            "refresh_token": refresh_token
-        })
+        # Skip write if nothing changed
+        if (
+            credentials.get("access_token") == access_token and
+            credentials.get("refresh_token") == refresh_token
+        ):
+            return
+        credentials["access_token"] = access_token
+        credentials["refresh_token"] = refresh_token
         self.store_credentials(credentials)
 
     async def pass_login_credentials(self, step, credentials, cookies):
@@ -282,53 +364,38 @@ class EAPlugin(Plugin):
         parsed_uri = urlparse(credentials["end_uri"])
 
         if parsed_uri.query:
-            query_params = parse_qs(parsed_uri.query)
-
-            logger.debug(f"parsed_uri.query: {query_params}")
-            if 'code' in query_params:
-                code = query_params.get('code', [None])[0]
-            else:
-                logger.error(f"No code found in query: {query_params}")
-            if code:
-                self._store_cookies(cookies)
-                logger.info(f"Code obtained: {code}")
-                return await self._do_authenticate(code)
+            params = parse_qs(parsed_uri.query)
+            code = params.get("code", [None])[0]
+            if not code:
+                raise AuthenticationRequired("No authorization code found in callback URL")
         else:
-            raise AuthenticationRequired("No code found in redirect URI")
+            raise AuthenticationRequired("Failed to extract query parameters from callback URL")
 
-    async def _do_authenticate(self, code: str):
-        if code:
-            try:
-                self._access_token, self._refresh_token = await self._http_client._exchange_auth_code_for_token(code)
-                
-                if self._access_token and self._refresh_token:
-                    self._store_tokens(self._access_token, self._refresh_token)
+        # Persist cookies received from the web session
+        try:
+            if cookies and isinstance(cookies, list):
+                cookie_dict = {}
+                for c in cookies:
+                    name = c.get("name")
+                    value = c.get("value")
+                    if name is not None and value is not None:
+                        cookie_dict[name] = value
+                if cookie_dict:
+                    self._store_cookies(cookie_dict)
+        except Exception as e:
+            logger.warning(f"Failed to persist web cookies: {e}")
 
-                    # decipher JWT token, it contains the persona id and the user id
-                    # JWT token is base64 encoded, so we need to decode it
-                    try:
-                        user_id, persona_id, user_name = await self.get_identity()
-                        self._user_id = user_id
-                        self._persona_id = persona_id
-                    except Exception as exc:
-                        logger.error(f"Failed to get identity: {exc}")
-                        raise AuthenticationRequired("Failed to get identity from token")
+        user_id, persona_id, user_name = await self._auth_manager.authenticate_with_code(code)
+    # Tokens already persisted via http client callback
+        try:
+            asyncio.create_task(self._prefetch_offers_background())
+        except Exception:
+            pass
+        return Authentication(user_id, user_name)
 
-                    logger.info("Access token set successfully")
-
-                if not self._user_id or not user_name:
-                    logger.error("user_id or user_name is None after authentication")
-                    raise AuthenticationRequired("user_id or user_name is None")
-                return Authentication(self._user_id, user_name)
-            except (AccessDenied, InvalidCredentials, AuthenticationRequired) as e:
-                logger.exception(f"Failed to authenticate: {repr(e)}")
-                raise InvalidCredentials()
-        else:
-            logger.error("No code provided for authentication")
-            raise AuthenticationRequired("No code provided for authentication")
-        
     @staticmethod
     def _offer_id_from_game_id(game_id: GameId) -> OfferId:
+        # Keep the full offer id prefix (e.g., DR:123, OFB-EAST:xxxx) to match backend/cache keys
         return OfferId(game_id.split('@')[0])
 
     async def _get_offers(self, offer_ids: Iterable[OfferId]) -> Dict[OfferId, Json]:
@@ -340,128 +407,134 @@ class EAPlugin(Plugin):
         # First check offers in the cache
         for offer_id in offer_ids:
             cached_offer = self._offer_id_cache.get(offer_id)
-            if isinstance(cached_offer, dict):
+            if cached_offer and isinstance(cached_offer, dict):
                 offers[offer_id] = cached_offer
             else:
                 missing_offers.append(offer_id)
         
         if missing_offers:
-            # Make batch requests for missing offers
-            requests = [self._backend_client.get_offer(offer_id) for offer_id in missing_offers]
-            new_offers = await asyncio.gather(*requests, return_exceptions=True)
-            
-            for i, offer in enumerate(new_offers):
-                if isinstance(offer, Exception):
-                    logger.error(f"Error retrieving offer {missing_offers[i]}: {repr(offer)}")
-                    continue
+            try:
+                gathered_offers = await self._backend_client.get_offers(missing_offers)
+            except Exception as e:
+                logger.error(f"Failed to fetch offers batch: {e}")
+                gathered_offers = {}
+            if isinstance(gathered_offers, dict):
+                for key, offer in gathered_offers.items():
+                    if isinstance(offer, dict):
+                        origin_offer_id = offer.get('offerId') or offer.get('originOfferId') or key
+                        if origin_offer_id:
+                            offers[OfferId(origin_offer_id)] = offer
+                            self._offer_id_cache[OfferId(origin_offer_id)] = offer
                 
-                if isinstance(offer, dict):
-                    offer_id = offer.get("originOfferId")
-                    if offer_id:
-                        offers[offer_id] = offer
-                        self._offer_id_cache[offer_id] = offer
-                else:
-                    logger.warning(f"Data for offer {missing_offers[i]} not found.")
-            
-            # Save cache updates
-            if any(isinstance(new_offers[i], dict) for i in range(len(new_offers))):
-                self.push_cache()
-        
-        return {k: v for k, v in offers.items() if isinstance(v, dict)}
-
-    async def _get_owned_offers(self) -> Dict[GameId, Json]:
-        """Retrieves all offers owned by the user and returns a dictionary with GameId as keys and offer data as values."""
-
-        entitlements = await self._backend_client.get_entitlements()
-        basegames = [
-            e for e in entitlements
-            if e.get("product") and e.get("product", {}).get("baseItem", {}).get("gameType") == "BASE_GAME"
-        ]
-        offer_ids = [e["originOfferId"] for e in basegames]
-        offers = await self._get_offers(offer_ids)
-
-        result = {}
-        for offer in offers.values():
-            result[GameId(offer["offerId"])] = offer
-        return result
+        return offers
 
     async def get_owned_games(self) -> List[Game]:
         self._check_authenticated()
 
-        owned_offers = await self._get_owned_offers()
+        entitlements = await self._backend_client.get_entitlements()
+        offer_ids: List[OfferId] = []
+        for e in entitlements:
+            origin_offer_id = e.get("originOfferId")
+            if isinstance(origin_offer_id, str) and origin_offer_id:
+                offer_ids.append(OfferId(origin_offer_id))
+        offers = await self._get_offers(offer_ids)
+
         games = []
-        for game_id, offer in owned_offers.items():
-            if game_id and offer is not None:
-                if "displayName" in offer:
-                    game = Game(
-                        game_id,
-                        offer.get("displayName") or offer['i18n'].get('displayName', 'Unknown Game'),
-                        None,
-                        LicenseInfo(LicenseType.SinglePurchase, None)
-                    )
-                    games.append(game)
-                else:
-                    continue
+        for origin_offer_id, offer in offers.items():
+            if not isinstance(offer, dict):
+                continue
+            display_name = offer.get('displayName') or offer.get('game_product', {}).get('name')
+            if not display_name:
+                continue
+            raw_offer_id = offer.get('offerId') or str(origin_offer_id)
+            if not raw_offer_id:
+                continue
+            game_id = GameId(raw_offer_id)
+            games.append(
+                Game(
+                    game_id,
+                    display_name,
+                    None,
+                    LicenseInfo(LicenseType.SinglePurchase, None)
+                )
+            )
         return games
 
     async def prepare_achievements_context(self, game_ids: List[GameId]) -> AchievementsImportContext:
         self._check_authenticated()
-        achievement_sets: Dict[GameSlug, AchievementSet] = dict()
-        achievements: Dict[AchievementSet, List[Achievement]] = dict()
+        achievement_sets: Dict[GameSlug, AchievementSet] = {}
+        achievements: Dict[AchievementSet, List[Achievement]] = {}
+
+        if self._auth_manager.persona_id is None:
+            logger.error("Persona ID is None, user might not be properly authenticated")
+            raise AuthenticationRequired("User not properly authenticated")
+
+        # Build mapping from game slug to achievement set using achievementSetOverride
+        slug_to_ach_set: Dict[GameSlug, AchievementSet] = {}
+        unique_ach_sets: Set[AchievementSet] = set()
         for game_id in game_ids:
             try:
-                offer = self._offer_id_from_game_id(game_id)
-                offer_data = self._offer_id_cache.get(offer)
-                if not offer_data or "gameSlug" not in offer_data:
+                offer_id = self._offer_id_from_game_id(game_id)
+                offer_data = self._offer_id_cache.get(offer_id)
+                if not offer_data:
                     continue
-                game_slug = GameSlug(offer_data["gameSlug"])
-                if self._persona_id is None:
-                    logger.error("Persona ID is None, user might not be properly authenticated")
-                    raise AuthenticationRequired("User not properly authenticated")
-                achievement_set = await self._backend_client.get_achievement_set(offer, self._persona_id)
-                if achievement_set is not None:
-                    achievement_set_obj = AchievementSet(achievement_set)
-                    achievement_sets[game_slug] = achievement_set_obj
-                    ach_dict = await self._backend_client.get_achievements(offer, self._persona_id)
-                    if isinstance(ach_dict, dict) and achievement_set_obj in ach_dict:
-                        achievements[achievement_set_obj] = ach_dict[achievement_set_obj]
-                    else:
-                        achievements[achievement_set_obj] = []
-                else:
-                    logger.debug(f"No achievements found for game {offer}")
-            except TypeError as e:
-                print(f"Error retrieving achievements for game {offer}: {e}")
+                # Resolve slug
+                game_slug_val = offer_data.get("gameSlug") or offer_data.get("gameNameFacetKey")
+                if not game_slug_val:
+                    continue
+                game_slug = GameSlug(game_slug_val)
+                # Resolve achievement set
+                ach_set_val = offer_data.get("achievementSetOverride")
+                if not ach_set_val:
+                    logger.debug(f"No achievementSetOverride for offer {offer_id}")
+                    continue
+                ach_set = AchievementSet(str(ach_set_val))
+                slug_to_ach_set[game_slug] = ach_set
+                unique_ach_sets.add(ach_set)
+            except Exception as e:
+                logger.error(f"Error processing game {game_id}: {e}")
+
+        if not slug_to_ach_set:
+            return AchievementsImportContext(
+                owned_games=achievement_sets,
+                achievements=achievements
+            )
+
+        # Fetch achievements per achievement set to preserve mapping
+        for ach_set in unique_ach_sets:
+            set_id, ach_list = await self._backend_client.get_achievements([ach_set], self._auth_manager.persona_id)
+            if set_id:
+                achievement_set_obj = AchievementSet(set_id)
+                achievements[achievement_set_obj] = ach_list or []
+
+        # Build mapping owned_games from slug_to_ach_set
+        achievement_sets.update(slug_to_ach_set)
+
         return AchievementsImportContext(
             owned_games=achievement_sets,
             achievements=achievements
         )
 
     async def get_unlocked_achievements(self, game_id: GameId, context: AchievementsImportContext) -> List[Achievement]:
-        offer = self._offer_id_from_game_id(game_id)
-        offer_data = self._offer_id_cache.get(offer)
-        if not offer_data or "gameSlug" not in offer_data:
-            logger.warning("Game '{}' doesn't have achievements.".format(game_id))
-            return []
-        game_slug = GameSlug(offer_data["gameSlug"])
-        if game_slug not in context.owned_games:
-            logger.warning("Game '{}' doesn't have achievements.".format(game_id))
-            return []
-        else:
-            achievements_set = context.owned_games[game_slug]
-            achievements = context.achievements.get(achievements_set)
-            if achievements is not None:
-                return achievements
-            if self._persona_id is None:
-                logger.error("Persona ID is None, user might not be properly authenticated")
-                raise AuthenticationRequired("User not properly authenticated")
-            ach_dict = await self._backend_client.get_achievements(offer, self._persona_id)
-            if isinstance(ach_dict, dict) and achievements_set in ach_dict:
-                return ach_dict[achievements_set]
+        try:
+            offer_id = self._offer_id_from_game_id(game_id)
+            offer = self._offer_id_cache.get(offer_id)
+            if not offer:
+                return []
+            game_slug_val = offer.get("gameSlug") or offer.get("gameNameFacetKey")
+            if not game_slug_val:
+                return []
+            game_slug = GameSlug(game_slug_val)
+            achievement_set = context.owned_games.get(game_slug)
+            if not achievement_set:
+                return []
+            return context.achievements.get(achievement_set, [])
+        except Exception:
             return []
 
     async def get_subscriptions(self) -> List[Subscription]:
         self._check_authenticated()
-        return await self._backend_client.get_subscriptions()
+        return await self._backend_client.get_user_subscriptions()
 
     async def prepare_subscription_games_context(self, subscription_names: List[str]) -> Any:
         self._check_authenticated()
@@ -470,13 +543,12 @@ class EAPlugin(Plugin):
             'EA Play Pro': 'premium'
         }
 
-    async def get_subscription_games(self, subscription_name: str, context: Dict[str, str]
-    ) -> AsyncGenerator[List[SubscriptionGame], None]:
+    async def get_subscription_games(self, subscription_name: str, context: Dict[str, str]) -> AsyncGenerator[List[SubscriptionGame], None]:
         try:
             tier = context[subscription_name]
         except KeyError:
             raise UnknownError(f'Unknown subscription name {subscription_name}!')
-        yield await self._backend_client.get_games_in_subscription(tier)
+        yield await self._backend_client.get_subscription_games_for_tier(tier)
 
     async def _get_game_times_for_master_title(self, game_id: GameId, game_slug: GameSlug, lastplayed_time: Optional[Timestamp]) -> GameTime:
         """
@@ -487,7 +559,6 @@ class EAPlugin(Plugin):
         def get_cached_game_times(_game_id: GameId, _lastplayed_time: Optional[Timestamp]) -> Optional[GameTime]:
             """"returns None if a new entry should be retrieved"""
             if _lastplayed_time is None:
-                # double-check if 'lastplayed_time' is unknown (maybe it was just to long ago)
                 return None
 
             offer_id = self._offer_id_from_game_id(_game_id)
@@ -513,13 +584,20 @@ class EAPlugin(Plugin):
     async def prepare_game_times_context(self, game_ids: List[GameId]) -> Any:
         self._check_authenticated()
         offer_ids = [self._offer_id_from_game_id(game_id) for game_id in game_ids]
-        game_slugs = [GameSlug(self._offer_id_cache[offer_id]["gameSlug"]) for offer_id in offer_ids if offer_id in self._offer_id_cache and "gameSlug" in self._offer_id_cache[offer_id]]
 
         try:
-            _, last_played_games = await asyncio.gather(
-                self._get_offers(offer_ids),  # update local cache ignoring return value
-                self._backend_client.get_lastplayed_games(game_slugs)
-            )
+            await self._get_offers(offer_ids)  # update local cache, ignore return value
+        except Exception as e:
+            logger.exception("Failed to fetch offers in batch: %s", repr(e))
+
+        game_slugs = [
+            GameSlug(self._offer_id_cache[offer_id]["gameSlug"])
+            for offer_id in offer_ids
+            if offer_id in self._offer_id_cache and "gameSlug" in self._offer_id_cache[offer_id]
+        ]
+
+        try:
+            last_played_games = await self._backend_client.get_lastplayed_games(game_slugs)
             if last_played_games is None:
                 last_played_games = {}
         except Exception as e:
@@ -533,13 +611,20 @@ class EAPlugin(Plugin):
         try:
             offer = self._offer_id_cache.get(offer_id)
             if offer is None:
-                logger.exception("Internal cache out of sync")
-                raise UnknownError()
-            if "gameSlug" in offer:
-                game_slug = GameSlug(offer["gameSlug"])
-            else:
-                # Specific case in which offer data's in the other format
-                game_slug = GameSlug(offer["gameNameFacetKey"])
+                # Try to fetch offer on-demand to heal cache
+                fetched = await self._backend_client.get_offers([offer_id])
+                if isinstance(fetched, dict):
+                    self._offer_id_cache.update({OfferId(k): v for k, v in fetched.items()})
+                offer = self._offer_id_cache.get(offer_id)
+                if offer is None:
+                    logger.error("Offer %s not found after fetch", offer_id)
+                    raise UnknownBackendResponse()
+
+            game_slug_val = offer.get("gameSlug") or offer.get("game_product", {}).get("gameSlug")
+            if not game_slug_val:
+                logger.error("Missing gameSlug for offer %s", offer_id)
+                raise UnknownBackendResponse()
+            game_slug = GameSlug(game_slug_val)
 
             return await self._get_game_times_for_master_title(
                 game_id,
@@ -566,7 +651,7 @@ class EAPlugin(Plugin):
 
     @staticmethod
     def _open_uri(uri):
-        logger.info("Opening {}".format(uri))
+        logger.info(f"Opening {uri}")
         webbrowser.open(uri)
     
     async def launch_game(self, game_id: GameId):
@@ -578,28 +663,25 @@ class EAPlugin(Plugin):
 
         master_title_id: MasterTitleId = offer["contentId"]
         if is_uri_handler_installed("origin2"):
-            uri = "origin2://game/launch?offerId={}".format(master_title_id)
+            uri = f"origin2://game/launch?offerIds={master_title_id}"
         else:
             uri = "https://www.ea.com/ea-app"
 
         self._open_uri(uri)
 
     async def install_game(self, game_id: GameId):
-        def is_subscription_game(game_id: GameId) -> bool:
-            return game_id.endswith('subscription')
-
-        def is_offer_missing_from_user_library(offer_id: OfferId):
-            return offer_id not in self._offer_id_cache
-        
         async def get_subscription_game_store_uri(offer_id):
             try:
-                offer = await self._backend_client.get_offer(offer_id)
-                return "https://www.ea.com/games/{}".format(offer["gdpPath"])
+                offers = await self._backend_client.get_offers([offer_id])
+                if offers and offer_id in offers:
+                    offer = offers[offer_id]
+                    return f"https://www.ea.com/games/{offer['gdpPath']}"
+                return "https://www.ea.com/ea-play/games"
             except (KeyError, UnknownError, BackendError, UnknownBackendResponse):
                 return "https://www.ea.com/ea-play/games"
 
         offer_id = self._offer_id_from_game_id(game_id)
-        if is_subscription_game(game_id) and is_offer_missing_from_user_library(offer_id):
+        if game_id.endswith('subscription') and offer_id not in self._offer_id_cache:
             uri = await get_subscription_game_store_uri(offer_id)
         elif is_uri_handler_installed("origin2"):
             offer_id = self._offer_id_from_game_id(game_id)
@@ -609,7 +691,7 @@ class EAPlugin(Plugin):
                 raise UnknownError()
 
             master_title_id: MasterTitleId = offer["contentId"]
-            uri = "origin2://game/launch?offerId={}&autoDownload=1".format(master_title_id)
+            uri = f"origin2://game/launch?offerIds={master_title_id}&autoDownload=1"
         else:
             uri = "https://www.ea.com/ea-app"
 
@@ -624,16 +706,18 @@ class EAPlugin(Plugin):
         self._open_uri("origin2://quit")
 
     def _store_cookies(self, cookies):
-        # Préserver les tokens existants lors du stockage des cookies
         current_credentials = self.persistent_cache.get("credentials", {})
         if isinstance(current_credentials, str):
             try:
                 current_credentials = json.loads(current_credentials)
             except:
                 current_credentials = {}
-        credentials = current_credentials.copy() if current_credentials else {}
-        credentials["cookies"] = cookies
-        self.store_credentials(credentials)
+        
+        # Skip write if unchanged
+        if current_credentials.get("cookies") == cookies:
+            return
+        current_credentials["cookies"] = cookies
+        self.store_credentials(current_credentials)
 
     def _update_stored_cookies(self, morsels):
         cookies = {}
@@ -642,40 +726,56 @@ class EAPlugin(Plugin):
         self._store_cookies(cookies)
 
     async def get_local_games(self) -> List[LocalGame]:
-        if self._local_games_update_in_progress:
+        # If offers cache is empty, schedule a background prefetch and continue using current cache
+        if not self._offer_id_cache:
+            try:
+                asyncio.create_task(self._prefetch_offers_background())
+            except Exception:
+                pass
+
+        if self._local_game_manager._local_games_update_in_progress:
             logger.debug("Local games are being updated, returning cached values")
-            if isinstance(self._local_games, list):
-                return self._local_games
-            return []
+            return self._local_game_manager._local_games if isinstance(self._local_game_manager._local_games, list) else []
+        
         loop = asyncio.get_running_loop()
         try:
-            self._local_games_update_in_progress = True
-            local_games = await loop.run_in_executor(None, partial(self._update_local_games))
-            self._local_games_last_update = time.time()
-            self._local_games = local_games
+            self._local_game_manager._local_games_update_in_progress = True
+            local_games = await loop.run_in_executor(None, partial(self._local_game_manager.update_local_games))
+            self._local_game_manager._local_games_last_update = int(time.time())
+            self._local_game_manager._local_games = local_games
+            return local_games
         finally:
-            self._local_games_update_in_progress = False
-        return local_games
+            self._local_game_manager._local_games_update_in_progress = False
 
     def handle_local_game_update_notifications(self):
+        # Skip notifications until authenticated with a valid token to avoid early 400s
+        if not self._auth_manager.is_authenticated() or not self._http_client.is_access_token_valid():
+            return
+        # If offers cache isn't ready yet, schedule background prefetch and skip this tick
+        if not self._offer_id_cache:
+            try:
+                asyncio.create_task(self._prefetch_offers_background())
+            except Exception:
+                pass
+            return
         async def notify_local_games_changed():
             notify_list = []
             try:
-                self._local_games_update_in_progress = True
-                notify_list = await loop.run_in_executor(None, partial(self._local_game_status))
-                self._local_games_last_update = time.time()
+                self._local_game_manager._local_games_update_in_progress = True
+                notify_list = await loop.run_in_executor(None, partial(self._local_game_manager.get_local_game_status))
+                self._local_game_manager._local_games_last_update = int(time.time())
             finally:
-                self._local_games_update_in_progress = False
+                self._local_game_manager._local_games_update_in_progress = False
 
             for local_games_notify in notify_list:
                 self.update_local_game_status(local_games_notify)
 
         # don't overlap update operations
-        if self._local_games_update_in_progress:
+        if self._local_game_manager._local_games_update_in_progress:
             logger.debug("Local games are being updated, skipping cache update")
             return
 
-        if time.time() - self._local_games_last_update < LOCAL_GAMES_CACHE_VALID_PERIOD:
+        if not self._local_game_manager.should_update_cache():
             logger.debug("Local games cache is fresh enough")
             return
 
@@ -683,41 +783,57 @@ class EAPlugin(Plugin):
         asyncio.create_task(notify_local_games_changed())
 
     async def prepare_local_size_context(self, game_ids: List[GameId]) -> Dict[str, pathlib.PurePath]:
+        if not is_windows():
+            return {}
         game_id_manifest_map: Dict[str, pathlib.PurePath] = {}
         for game_id in game_ids:
             game = self._offer_id_cache.get(self._offer_id_from_game_id(game_id))
             if not game:
                 continue
-            if ("installCheckOverride" in game or "executePathOverride" in game):
-                path = game.get("installCheckOverride", None) or game.get("executePathOverride", None)
-                if path and path.startswith('[') and ']' in path:
-                    reg_parts = path.split(']', 1)
-                    reg_key = reg_parts[0][1:]
-                    reg_components = reg_key.split('\\')
-                    if len(reg_components) >= 3:
-                        try:
-                            hive_name = reg_components[0]
-                            hive = getattr(winreg, hive_name)
-                            value_name = reg_components[-1]
-                            key_path = "\\".join(reg_components[1:-1])
-                            install_location = get_install_location(hive, key_path, value_name)
-                            if install_location and os.path.exists(install_location):
-                                manifest_path = pathlib.Path(install_location) / "Support" / "mnfst.txt"
-                                game_id_manifest_map[str(game_id)] = manifest_path
-                                logger.debug(f"Manifest path for {game_id}: {manifest_path}")
-                        except Exception as e:
-                            logger.error(f"Error accessing registry key {path}: {e}")
+
+            # Get install path from either field
+            path = game.get("installCheckOverride") or game.get("executePathOverride")
+            if not path or not path.startswith('[') or ']' not in path:
+                continue
+
+            try:
+                parsed_expr = parse_registry_expression(path)
+                manifest_path: Optional[pathlib.Path] = None
+
+                if parsed_expr:
+                    hive, key_path, value_name, tail = parsed_expr
+                    if tail:
+                        resolved = resolve_registry_expression(path)
+                        if resolved:
+                            resolved_path = pathlib.Path(resolved)
+                            base_dir = resolved_path if resolved_path.is_dir() else resolved_path.parent
+                            manifest_path = base_dir / "Support" / "mnfst.txt"
                     else:
-                        logger.error(f"Invalid registry key format: {path}")
+                        install_location = RegistryManager.get_registry_value(hive, key_path, value_name)
+                        if install_location:
+                            manifest_path = pathlib.Path(install_location) / "Support" / "mnfst.txt"
+                else:
+                    head = path.split(']', 1)[0] + ']'
+                    install_location = resolve_registry_expression(head)
+                    if install_location:
+                        base_dir = pathlib.Path(install_location)
+                        manifest_path = base_dir / "Support" / "mnfst.txt"
+
+                if manifest_path is not None:
+                    game_id_manifest_map[str(game_id)] = manifest_path
+            except Exception as e:
+                logger.error(f"Error processing registry path for {game_id}: {e}")
+
         return game_id_manifest_map
 
     async def get_local_size(self, game_id: GameId, context: Dict[str, pathlib.PurePath]) -> Optional[int]:
         try:
-            return parse_total_size(context[game_id])
+            manifest_path = context[game_id]
+            return parse_total_size(manifest_path)
         except FileNotFoundError:
             return None
         except KeyError:
-            raise UnknownError("Manifest not found")
+            return None
 
     def handshake_complete(self):
         def game_time_decoder(cache: dict) -> Dict[OfferId, GameTime]:

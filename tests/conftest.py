@@ -3,8 +3,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plugin import OriginPlugin
-from backend import AuthenticatedHttpClient
+from plugin import EAPlugin
+from http_client import AuthenticatedHttpClient
+from backend import EABackendClient
 from tests.async_mock import AsyncMock
 
 
@@ -84,8 +85,8 @@ def process_iter_mock(mocker):
 def create_plugin(process_iter_mock, cache, local_games_path, http_client, backend_client):
     def function():
         with patch("plugin.AuthenticatedHttpClient", return_value=http_client):
-            with patch("plugin.OriginBackendClient", return_value=backend_client):
-                return OriginPlugin(MagicMock(), MagicMock(), None)
+            with patch("plugin.EABackendClient", return_value=backend_client):
+                return EAPlugin(MagicMock(), MagicMock(), None)
 
     return function
 

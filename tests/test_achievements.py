@@ -2,7 +2,7 @@ import pytest
 from galaxy.api.errors import AuthenticationRequired
 from galaxy.api.types import Achievement
 
-from backend import OriginBackendClient
+from backend import EABackendClient
 from plugin import AchievementsImportContext
 
 from tests.async_mock import AsyncMock
@@ -230,11 +230,12 @@ async def test_achievements_parsing(
     explicit_set,
     http_client,
     user_id,
+    persona_id,
     create_json_response
 ):
     http_client.get.return_value = create_json_response(backend_response)
 
-    assert parsed == await OriginBackendClient(http_client).get_achievements(user_id, explicit_set)
+    assert parsed == await EABackendClient(http_client).get_achievements(user_id, persona_id)
 
     http_client.get.assert_called_once_with(
         "https://achievements.gameservices.ea.com/achievements/personas/{user_id}{specific_set}/all".format(

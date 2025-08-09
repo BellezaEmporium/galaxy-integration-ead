@@ -1,4 +1,4 @@
-from backend import OriginBackendClient
+from backend import EABackendClient
 from galaxy.api.types import FriendInfo
 from galaxy.api.errors import AuthenticationRequired
 import pytest
@@ -55,5 +55,5 @@ async def test_multiple_friends(authenticated_plugin, backend_client, user_id):
 async def test_profile_parsing(http_client, user_id, create_xml_response):
     http_client.get.return_value = create_xml_response(BACKEND_FRIENDS_RESPONSE)
 
-    assert PARSED_FRIEND_LIST_RESPONSE == await OriginBackendClient(http_client).get_friends(user_id)
-    http_client.get.assert_called_once()
+    assert PARSED_FRIEND_LIST_RESPONSE == await EABackendClient(http_client).get_friends()
+    http_client.get.assert_called_once_with(f"https://friends.gs.ea.com/api/users/{user_id}/friends")

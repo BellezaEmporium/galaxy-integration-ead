@@ -1,13 +1,13 @@
 {
-    "tag_name": "v44.3",
+    "tag_name": "v44.4",
     "assets": [
         {
-            "browser_download_url": "https://github.com/BellezaEmporium/galaxy-integration-ead/releases/download/v44.3/windows.zip",
+            "browser_download_url": "https://github.com/BellezaEmporium/galaxy-integration-ead/releases/download/v44.4/windows.zip",
             "name": "windows.zip"
         },
         {
-            "browser_download_url": "https://github.com/BellezaEmporium/galaxy-integration-ead/releases/download/v44.3/macos.zip",
-            "name": "macos.zip"
+            "browser_download_url": "https://github.com/BellezaEmporium/galaxy-integration-ead/releases/download/v44.4/mac.zip",
+            "name": "mac.zip"
         }
     ]
 }

@@ -2,13 +2,11 @@ import json
 import logging
 from collections import namedtuple
 from datetime import datetime
+from urllib.parse import quote
 from typing import Dict, List, NewType, Optional, Any, Tuple
 
-from galaxy.api.errors import (
-    UnknownBackendResponse
-)
+from galaxy.api.errors import UnknownBackendResponse
 from galaxy.api.types import Achievement, SubscriptionGame, Subscription
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,7 +30,8 @@ class EABackendClient:
         return "https://service-aggregation-layer.juno.ea.com/graphql"
 
     async def get_identity(self) -> Tuple[str, str, str]:
-        url = "{}?query=query{{me{{player{{pd psd displayName}}}}}}".format(self._get_api_host())
+        query = "query{me{player{pd psd displayName}}}"
+        url = f"{self._get_api_host()}?query={quote(query)}"
         pid_response = await self._http_client.get(url)
 
         try:
@@ -46,58 +45,123 @@ class EABackendClient:
             raise UnknownBackendResponse()
 
     async def get_entitlements(self) -> List[Json]:
-        # Step 1 = get all Origin product IDs
-        u1 = "{}?query=query{{me{{ownedGameProducts(locale:\"DEFAULT\" entitlementEnabled:true storefronts:[EA] type:[DIGITAL_FULL_GAME, PACKAGED_FULL_GAME, DIGITAL_EXTRA_CONTENT, PACKAGED_EXTRA_CONTENT] platforms:[PC] paging:{{limit:9999}}){{items{{originOfferId product{{id name gameSlug baseItem {{gameType}} gameProductUser{{ownershipMethods entitlementId}}}}}}}}}}}}".format(self._get_api_host())
-        d1 = await self._http_client.get(u1)
+        query = """query {
+                    me {
+                        ownedGameProducts(
+                            locale: "DEFAULT"
+                            entitlementEnabled: true
+                            storefronts: [EA]
+                            type: [DIGITAL_FULL_GAME, PACKAGED_FULL_GAME, DIGITAL_EXTRA_CONTENT, PACKAGED_EXTRA_CONTENT]
+                            platforms: [PC]
+                            paging: { limit: 9999 }
+                        ) {
+                            items {
+                                originOfferId
+                                product {
+                                    id
+                                    name
+                                    gameSlug
+                                    baseItem {
+                                        gameType
+                                    }
+                                    gameProductUser {
+                                        ownershipMethods
+                                        entitlementId
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }"""
+        
+        url = f"{self._get_api_host()}?query={quote(query)}"
+        response = await self._http_client.get(url)
+        
         try:
-            return d1['data']['me']['ownedGameProducts']['items']
+            return response['data']['me']['ownedGameProducts']['items']
         except (ValueError, KeyError) as e:
-            logger.exception("Can not parse backend response: %s, error %s", await d1.text(), repr(e))
+            logger.exception("Can not parse backend response: %s, error %s", response, repr(e))
             raise UnknownBackendResponse()
-    
-    async def get_offer(self, offer_id) -> Json:
-        u2 = "{}?query=query{{legacyOffers(offerIds: [\"{}\"], locale: \"DEFAULT\"){{offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds achievementSetOverride multiplayerId installCheckOverride executePathOverride displayName displayType metadataInstallLocation softwarePlatform softwareId}} gameProducts(offerIds: [\"{}\"], locale: \"DEFAULT\"){{items{{id name originOfferId baseItem{{title}} gameSlug}}}}}}".format(
-                self._get_api_host(),
-                offer_id,
-                offer_id
-            )
-        u2 = u2.replace(' ', '%20').replace('+', '%20')
-        response = await self._http_client.get(u2)
+
+    async def get_offers(self, offer_ids: List[str]) -> Dict[str, Json]:
+        query = (
+            "query{"
+            f"legacyOffers(offerIds: {json.dumps(offer_ids)}, locale: \"DEFAULT\")" "{"
+            "offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds "
+            "achievementSetOverride multiplayerId installCheckOverride executePathOverride "
+            "displayName displayType metadataInstallLocation softwarePlatform softwareId"
+            "}"
+            f"gameProducts(offerIds: {json.dumps(offer_ids)}, locale: \"DEFAULT\")" "{"
+            "items{id name originOfferId baseItem {title gameType} gameSlug}"
+            "}"
+            "}"
+        )
+
+        url = f"{self._get_api_host()}?query={quote(query)}"
+        response = await self._http_client.get(url)
+
         try:
-            legacy_offer = (response.get('data', {}).get('legacyOffers') or [{}])[0]
-            product = (response.get('data', {}).get('gameProducts', {}).get('items') or [])[0]
+            if not isinstance(response, dict):
+                raise ValueError("Response is not a dict")
+            data = response.get('data') or {}
 
-            if 'FullGame' in legacy_offer.get('displayType', ''):
-                if 'displayName' not in legacy_offer and product:
-                    legacy_offer['displayName'] = product.get('name', f"Unknown Game ({offer_id})")
+            legacy_offers = data.get('legacyOffers') or []
+            game_products = (data.get('gameProducts') or {}).get('items', [])
 
-                if 'gameSlug' in product:
+            by_origin_offer = {p.get('originOfferId'): p for p in game_products if isinstance(p, dict) and p.get('originOfferId')}
+            by_product_id = {p.get('id'): p for p in game_products if isinstance(p, dict) and p.get('id')}
+
+            result: Dict[str, Json] = {}
+
+            for legacy_offer in legacy_offers:
+                if not isinstance(legacy_offer, dict):
+                    continue
+                offer_id = legacy_offer.get('offerId')
+                content_id = legacy_offer.get('contentId')
+                if not offer_id:
+                    continue
+
+                product = (
+                    by_origin_offer.get(offer_id)
+                    or (content_id and by_product_id.get(content_id))
+                    or by_product_id.get(offer_id)
+                    or {}
+                )
+
+                display_type = str(legacy_offer.get('displayType', '')).replace('_', '').lower()
+                game_type = str(product.get('baseItem', {}).get('gameType', '')).lower()
+                is_full_or_base = display_type in {"fullgame", "basegame", "game"}
+                is_base_game = game_type == 'base_game'
+                if not (is_full_or_base or is_base_game):
+                    logger.debug("Offer %s filtered out (displayType=%s gameType=%s)", offer_id, display_type, game_type)
+                    continue
+
+                if not legacy_offer.get('displayName'):
+                    legacy_offer['displayName'] = product.get('name') or f"Unknown Game ({offer_id})"
+                if product.get('gameSlug'):
                     legacy_offer['gameSlug'] = product['gameSlug']
 
-                combined_data = legacy_offer.copy()
-                combined_data['game_product'] = product if product else {}
+                legacy_offer['game_product'] = product  # trace/debug
 
-                return combined_data
-            else:
-                logger.debug("Offer ID %s is not a full game, skipping", offer_id)
-                return {}
-        except (ValueError, KeyError, TypeError) as e:
-            logger.exception("Can not parse backend response: %s, error %s", await response.text(), repr(e))
+                key = product.get('originOfferId') or offer_id
+                result[key] = legacy_offer
+
+            return result
+        except Exception as e:
+            logger.exception("Can not parse backend response: %s, error %s", response, repr(e))
             raise UnknownBackendResponse()
         
 
-    async def get_achievements(self, offer: OfferId, persona: str) -> Dict[str, List[Achievement]]:
-        url = "{}?query=query{{achievements(offerId:\"{}\",playerPsd:\"{}\",showHidden:true){{id achievements{{id name awardCount date}}}}}}".format(
-            self._get_api_host(),
-            str(offer),
-            str(persona)
-        )
+    async def get_achievements(self, achievement_sets: List[AchievementSet], persona: str) -> Tuple[Optional[str], List[Achievement]]:
+        query = f"query{{achievements(achievementSetIds:{json.dumps([str(x) for x in achievement_sets])},playerPsd:\"{str(persona)}\",showHidden:true){{id achievements{{id name awardCount date}}}}}}"
+        url = f"{self._get_api_host()}?query={quote(query)}"
         response = await self._http_client.get(url)
+        
         def parser(json_data: Dict) -> List[Achievement]:
             achievements = []
             try:
                 for achievement in json_data["achievements"]:
-                    if achievement["awardCount"] == 1:
+                    if achievement.get("awardCount") == 1:
                         date_obj = datetime.strptime(achievement["date"], "%Y-%m-%dT%H:%M:%S.%fZ")
                         unix_timestamp = int(date_obj.timestamp())
                         achievement_data = Achievement(
@@ -112,41 +176,32 @@ class EABackendClient:
             return achievements
 
         try:
-            achievement_sets = {}
-            for achievement_set in response["data"]["achievements"]:
-                achievements = parser(achievement_set)
-                achievement_sets[achievement_set["id"]] = achievements
-            return achievement_sets
-
-        except (ValueError, KeyError) as e:
-            logger.exception("Can not parse achievements from backend response %s", repr(e))
-            raise UnknownBackendResponse()
-
-    async def get_achievement_set(self, offer_id: OfferId, persona_id: str) -> Optional[str]:
-        url = "{}?query=query{{achievements(offerId:\"{}\",playerPsd:\"{}\"){{id}}}}".format(self._get_api_host(), offer_id, persona_id)
-        response = await self._http_client.get(url)
-    
-        try:
-            achievements = response["data"]["achievements"]
-            if achievements:
-                return achievements[0]["id"] if "id" in achievements[0] else None
-            else:
-                return None
+            achievement_sets = response["data"]["achievements"]
+            if not achievement_sets:
+                return None, []
+            
+            all_achievements = []
+            achievement_set_id = None
+            
+            for achievement_set in achievement_sets:
+                if isinstance(achievement_set, dict) and "id" in achievement_set and not achievement_set_id:
+                    achievement_set_id = achievement_set["id"]
+                if isinstance(achievement_set, dict):
+                    achievements = parser(achievement_set)
+                    all_achievements.extend(achievements)
+            
+            return achievement_set_id, all_achievements
 
         except (ValueError, KeyError) as e:
             logger.exception("Can not parse achievements from backend response %s", repr(e))
             raise UnknownBackendResponse()
 
     async def get_game_time(self, game_slug):
-        url = "{}?query=query{{me{{recentGames(gameSlugs:{}){{items{{lastSessionEndDate totalPlayTimeSeconds}}}}}}}}".format(
-            self._get_api_host(),
-            json.dumps(game_slug)
-        )
-
+        query = f"query{{me{{recentGames(gameSlugs:{json.dumps(game_slug)}){{items{{lastSessionEndDate totalPlayTimeSeconds}}}}}}}}"
+        url = f"{self._get_api_host()}?query={quote(query)}"
         response = await self._http_client.get(url)
 
         """
-        example response:
         {
             "data": {
                 "me": {
@@ -172,7 +227,6 @@ class EABackendClient:
                         
                 return int(time_delta.total_seconds())
 
-            # assuming this is just EA's way of saying we never played a game.
             if not response['data']['me']['recentGames']['items']:
                 return 0, None
             else:
@@ -181,16 +235,13 @@ class EABackendClient:
 
             return total_play_time, last_played_time
         except (AttributeError, ValueError, KeyError) as e:
-            logger.exception("Can not parse backend response: %s, %s", await response.text(), repr(e))
+            logger.exception("Can not parse backend response: %s, %s", response, repr(e))
             raise UnknownBackendResponse()
 
     async def get_friends(self):
-        response = await self._http_client.get(
-            "{}?query=query{{me{{friends{{items{{player{{pd psd displayName avatar{{large{{path}}}}}}}}}}}}}}".format(
-                self._get_api_host()
-            )
-        )
-
+        query = "query{me{friends{items{player{pd psd displayName avatar{large{path}}}}}}}"
+        url = f"{self._get_api_host()}?query={quote(query)}"
+        response = await self._http_client.get(url)
         """
         {
             "data": {
@@ -215,23 +266,18 @@ class EABackendClient:
             }
         }
         """
-
         try:
             return {
                 user_json['player']['pd']: (user_json["player"]["displayName"], user_json["player"]["avatar"]["large"]["path"])
                 for user_json in response["data"]["me"]["friends"]["items"]
             }
         except (AttributeError, KeyError):
-            logger.exception("Can not parse backend response: %s", await response.text())
+            logger.exception("Can not parse backend response: %s", response)
             raise UnknownBackendResponse()
 
     async def get_lastplayed_games(self, game_slugs) -> Dict[GameSlug, Timestamp]:
-        url = "{}?query=query{{me{{recentGames(gameSlugs:{}){{items{{gameSlug lastSessionEndDate}}}}}}}}".format(
-            self._get_api_host(),
-            json.dumps(game_slugs)
-        )
-
-        response = await self._http_client.get(url.replace(' ', '%20').replace('+', '%20'))
+        query = f"query{{me{{recentGames(gameSlugs:{json.dumps(game_slugs)}){{items{{gameSlug lastSessionEndDate}}}}}}}}"
+        response = await self._http_client.get(f"{self._get_api_host()}?query={quote(query)}")
 
         '''
         {
@@ -289,91 +335,82 @@ class EABackendClient:
                 logger.debug(f"Subscription status is not 'ACTIVE': {sub_json}")
                 return None
         except (ValueError, KeyError) as e:
-            logger.exception("Quack ! Seems like there's an issue involving subscriptions: %s, error %s", await sub_json.text(), repr(e))
+            logger.exception("Quack ! Seems like there's an issue involving subscriptions: %s, error %s", sub_json, repr(e))
             raise UnknownBackendResponse()
 
     async def _get_subscription_uris(self) -> List[str]:
-        url = "{}?query=query{{me{{subscriptions{{offerId recurring start end level status offer{{offerName duration}} platform type statusReasonCode acquisitionMethod}}}}}}".format(self._get_api_host())
+        query = "query{me{subscriptions{offerId recurring start end level status offer{offerName duration} platform type statusReasonCode acquisitionMethod}}}"
+        url = f"{self._get_api_host()}?query={quote(query)}"
         response = await self._http_client.get(url)
         try:
             return response['data']['me']['subscriptions']
         except (ValueError, KeyError) as e:
-            logger.exception("Can not parse backend response while getting subs uri: %s, error %s", await response.text(), repr(e))
+            logger.exception("Can not parse backend response while getting subs uri: %s, error %s", response, repr(e))
             raise UnknownBackendResponse()
 
-    async def get_subscriptions(self) -> List[Subscription]:
-        subs = {'standard': Subscription(subscription_name='EA Play', owned=False),
-                'premium': Subscription(subscription_name='EA Play Pro', owned=False)}
+    async def get_active_subscription(self) -> Optional[SubscriptionDetails]:
+        """
+        Returns the active subscription for the user, if any.
+        """
         for sub in await self._get_subscription_uris():
             user_sub = await self._get_active_subscription(sub)
             if user_sub:
-                break
-        else:
-            user_sub = None
-        logger.debug(f'user_sub: {user_sub}')
-        try:
-            if user_sub:
+                return user_sub
+        return None
+
+    async def get_user_subscriptions(self) -> List[Subscription]:
+        """
+        Returns the list of Galaxy subscriptions (EA Play, EA Play Pro) with their status for the user.
+        """
+        subs = {'standard': Subscription(subscription_name='EA Play', owned=False),
+                'premium': Subscription(subscription_name='EA Play Pro', owned=False)}
+        user_sub = await self.get_active_subscription()
+        if user_sub:
+            try:
                 subs[user_sub.tier].owned = True
                 subs[user_sub.tier].end_time = user_sub.end_time
-        except (ValueError, KeyError) as e:
-            logger.exception("Unknown subscription tier, error %s", repr(e))
-            raise UnknownBackendResponse()
+            except (ValueError, KeyError) as e:
+                logger.exception("Unknown subscription tier, error %s", repr(e))
+                raise UnknownBackendResponse()
         return [subs['standard'], subs['premium']]
 
     async def get_games_in_subscription(self, tier) -> List[SubscriptionGame]:
         if tier == 'standard':
-            tier = "ORIGIN_ACCESS_BASIC"
-            check = "ea-play"
+            api_tier = "origin-access-basic"
         elif tier == 'premium':
-            tier = "ORIGIN_ACCESS_PREMIER"
-            check = "ea-play-pro"
-            check2 = "ea-play"
+            api_tier = "origin-access-premier"
 
-        url = "{}?query=query{{gameSearch(filter:{{gameTypes:[BASE_GAME],productLifecycleFilter:{{lifecycleTypes:[{}]}}}},paging:{{limit:9999}}){{items{{slug}}}}}}".format(self._get_api_host(), tier)
+        query = f"query{{gameSearch(filter: {{gameTypes: [BASE_GAME, COLLECTION], subscriptionAvailabilitiesWithFreeToPlay: [{api_tier}]}} paging: {{limit: 9999}}) {{items {{slug}}}}}}"
+        url = f"{self._get_api_host()}?query={quote(query)}"
         response = await self._http_client.get(url)
         try:
             slugs = [game['slug'] for game in response['data']['gameSearch']['items']]
-            # we'll only get slugs, now get entitlement data
-            subscription_games = []  # Create an empty list to accumulate the subscription games
-            url2 = "{}?query=query{{games(slugs:{}){{items{{slug products{{items{{id name originOfferId}}}}}}}}}}".format(
-                self._get_api_host(),
-                json.dumps(slugs)
-            )
-            games = await self._http_client.get(url2.replace(' ', '%20').replace('+', '%20'))
+            subscription_games = []
+            query2 = f"query{{games(slugs:{json.dumps(slugs)}){{items{{slug products{{items{{id name originOfferId}}}}}}}}}}"
+            url2 = f"{self._get_api_host()}?query={quote(query2)}"
+            games = await self._http_client.get(url2)
             try:
-                # verify product info, and take the correct Origin offer ID (some games have multiple offers)
                 for game in games['data']['games']['items']:
-                    if len(game['products']['items']) == 1:
-                        subscription_games.append(
-                            SubscriptionGame(
-                                game_title=game['products']['items'][0]['name'],
-                                game_id=game['products']['items'][0]['originOfferId'] + '@subscription'
+                    for game_product in game['products']['items']:
+                        if (tier == 'premium' and 'ea-play-pro' in game_product['id']) or ('ea-play' in game_product['id']):
+                            subscription_games.append(
+                                SubscriptionGame(
+                                    game_title=game_product['name'],
+                                    game_id=game_product['originOfferId'] + '@subscription'
+                                )
                             )
-                        )
-                    for product in game['products']['items']:
-                        if tier == "ORIGIN_ACCESS_BASIC":
-                            verif = product['id'].find(check)
-                            if verif != -1:
-                                subscription_games.append(
-                                    SubscriptionGame(
-                                        game_title=product['name'],
-                                        game_id=product['originOfferId'] + '@subscription'
-                                    )
-                                )
-                        elif tier == "ORIGIN_ACCESS_PREMIER":
-                            verif = product['id'].find(check)
-                            verif2 = product['id'].find(check2)
-                            if verif != -1 or verif2 != -1:
-                                subscription_games.append(
-                                    SubscriptionGame(
-                                        game_title=product['name'],
-                                        game_id=product['originOfferId'] + '@subscription'
-                                    )
-                                )
+                            break
             except (ValueError, KeyError) as e:
                 logger.exception("Can not parse backend response while getting subs games: %s, error %s", games, repr(e))
                 raise UnknownBackendResponse()
             return subscription_games
         except (ValueError, KeyError) as e:
-            logger.exception("Can not parse backend response while getting subs games: %s, error %s", await response.text(), repr(e))
+            logger.exception("Can not parse backend response while getting subs games: %s, error %s", response, repr(e))
             raise UnknownBackendResponse()
+
+    async def get_subscription_games_for_tier(self, tier: str) -> List[SubscriptionGame]:
+        """
+        Returns the list of games available in the specified subscription tier.
+        Valid tiers are 'standard' for EA Play and 'premium' for EA Play Pro.
+        """
+        return await self.get_games_in_subscription(tier)

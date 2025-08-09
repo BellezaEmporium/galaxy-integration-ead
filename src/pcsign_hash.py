@@ -1,6 +1,6 @@
 ###
 #----------------------------------------------------PC SIGN----------------------------------------------------#
-# EA Desktop way of linking your login info to your PC. This is a hash of your hardware info and a timestamp.
+# EA Desktop's way of linking your login info to your PC. This is a hash of your hardware info and a timestamp.
 # The hash is signed with a secret key to prevent tampering. The server can verify the hash with the secret key.
 # The server can also generate the hash itself and compare it to the one sent by the client.
 # It, then, can decide if the client is allowed to log in.
@@ -8,6 +8,7 @@
 # Kudos to @imLinguin for the necessary info.
 ###
 
+import tempfile
 import os
 import platform
 import random
@@ -19,9 +20,13 @@ import hashlib
 import json
 import threading
 import time
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Tuple
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class PCSignVersion(Enum):
     V1 = "v1"
@@ -42,26 +47,26 @@ class HardwareInfoCache:
         if not hasattr(self, '_initialized'):
             self._cache = None
             self._cache_time = None
-            self._cache_duration = 3600  # 1 heure en secondes
+            self._cache_duration = 3600
             self._initialized = True
     
     def set_cache_duration(self, duration_seconds: int):
-        """Permet de modifier la durée du cache (utile pour les tests)"""
+        """Permits to modify the cache duration"""
         with self._lock:
             self._cache_duration = duration_seconds
-            # Invalider le cache actuel si on raccourcit la durée
             if (self._cache_time is not None and 
                 time.time() - self._cache_time >= duration_seconds):
                 self._cache = None
                 self._cache_time = None
     
     def clear_cache(self):
-        """Force l'invalidation du cache"""
+        """Forces cache invalidation"""
         with self._lock:
             self._cache = None
             self._cache_time = None
     
     def get_hardware_info(self) -> Tuple[str, str, int, str, str, str, str, str]:
+        """Get hardware information with caching and optimized methods"""
         current_time = time.time()
         
         if (self._cache is not None and 
@@ -75,9 +80,9 @@ class HardwareInfoCache:
                 current_time - self._cache_time < self._cache_duration):
                 return self._cache
             
-            if os.name == "nt":
-                self._cache = self._gather_windows_info_optimized()
-            elif os.name == "posix" and platform.system() == "Darwin":
+            if platform.system() == "Windows":
+                self._cache = self._gather_windows_info()
+            elif platform.system() == "Darwin":
                 self._cache = self._gather_macos_info()
             else:
                 raise OSError("Unsupported OS")
@@ -93,59 +98,71 @@ class HardwareInfoCache:
             output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, timeout=15)
             return output.decode('utf-8', errors='ignore').strip()
         except subprocess.TimeoutExpired:
-            import logging
-            logging.warning(f"Command timed out: {cmd[:50]}...")
+            logger.warning(f"Command timed out: {cmd[:50]}...")
             return ""
         except subprocess.CalledProcessError as e:
-            import logging
-            logging.warning(f"Command failed with return code {e.returncode}: {cmd[:50]}...")
+            logger.warning(f"Command failed with return code {e.returncode}: {cmd[:50]}...")
             return ""
         except Exception as e:
-            import logging
-            logging.warning(f"Unexpected error running command: {e}")
+            logger.warning(f"Unexpected error running command: {e}")
             return ""
     
-    def _gather_windows_info_optimized(self):
-        """Get hardware information on Windows with improved error handling"""
+    def _gather_windows_info(self):
+        """Get hardware information on Windows with CIM commands (PowerShell)"""
         ps_script = '''
         try {
-            $bios = Get-CimInstance -ClassName Win32_BIOS
-            $baseBoard = Get-CimInstance -ClassName Win32_BaseBoard
-            $os = Get-CimInstance -ClassName Win32_OperatingSystem
-            $videoControllers = Get-CimInstance -ClassName Win32_VideoController
-            $diskDrive = Get-WmiObject -Class Win32_DiskDrive | Select-Object -Index 0
-            $networkAdapter = Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -and $_.NetEnabled -and $_.ServiceName -notmatch 'vmnetadapter|vboxnetadp|ndisip|tap|hyperv|loopback' } | Select-Object -First 1
+            $ErrorActionPreference = "SilentlyContinue"
+            
+            $bios = Get-CimInstance Win32_BIOS | Select-Object -First 1
+            $baseBoard = Get-CimInstance Win32_BaseBoard | Select-Object -First 1
+            $os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1
+            $videoControllers = Get-CimInstance Win32_VideoController | Where-Object { $_.PNPDeviceID -match "DEV_[0-9A-F]+" } | Select-Object -First 1
+            $diskDrive = Get-CimInstance Win32_DiskDrive | Select-Object -First 1
+            $networkAdapter = Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -eq $true -and $_.NetEnabled -eq $true -and $_.ServiceName -notmatch "vmnetadapter|vboxnetadp|ndisip|tap|hyperv|loopback" -and $_.MACAddress } | Select-Object -First 1
             
             $gid = 0
-            foreach ($gpu in $videoControllers) {
-                if ($gpu.PNPDeviceID -match "DEV_([0-9A-F]+)") {
-                    $gid = [Convert]::ToInt32($matches[1], 16)
-                    break
+            if ($videoControllers -and $videoControllers.PNPDeviceID) {
+                if ($videoControllers.PNPDeviceID -match "DEV_([0-9A-F]+)") {
+                    try {
+                        $gid = [Convert]::ToInt32($matches[1], 16)
+                    } catch {
+                        $gid = 0
+                    }
+                }
+            }
+
+            $mac = ""
+            if ($networkAdapter -and $networkAdapter.MACAddress) {
+                $macClean = $networkAdapter.MACAddress -replace "[:-]", ""
+                if ($macClean) {
+                    $mac = "`$" + $macClean.ToLower()
                 }
             }
             
-            $mac = ""
-            if ($networkAdapter -and $networkAdapter.MACAddress) {
-                $mac = "$" + ($networkAdapter.MACAddress -replace ':', '' -replace '-', '').ToLower()
-            }
-            
             $osiTimestamp = ""
-            if ($os.InstallDate) {
-                $osiTimestamp = $os.InstallDate.ToString()
+            if ($os -and $os.InstallDate) {
+                try {
+                    $epoch = Get-Date "1970-01-01"
+                    $osiTimestamp = [int64](($os.InstallDate - $epoch).TotalSeconds)
+                } catch {
+                    $osiTimestamp = ""
+                }
             }
             
-            @{
-                bbm = if ($bios.Manufacturer) { $bios.Manufacturer } else { "" }
-                bsn = if ($bios.SerialNumber) { $bios.SerialNumber } else { "" }
+            $result = @{
+                bbm = if ($bios -and $bios.Manufacturer) { $bios.Manufacturer.ToString() } else { "" }
+                bsn = if ($bios -and $bios.SerialNumber) { $bios.SerialNumber.ToString() } else { "" }
                 gid = $gid
-                hsn = if ($diskDrive.SerialNumber) { $diskDrive.SerialNumber } else { "" }
-                msn = if ($baseBoard.SerialNumber) { $baseBoard.SerialNumber } else { "" }
+                hsn = if ($diskDrive -and $diskDrive.SerialNumber) { $diskDrive.SerialNumber.ToString().Trim() } else { "" }
+                msn = if ($baseBoard -and $baseBoard.SerialNumber) { $baseBoard.SerialNumber.ToString() } else { "" }
                 mac = $mac
-                osn = if ($os.SerialNumber) { $os.SerialNumber } else { "" }
-                osi = $osiTimestamp
-            } | ConvertTo-Json -Compress
+                osn = if ($os -and $os.SerialNumber) { $os.SerialNumber.ToString() } else { "" }
+                osi = $osiTimestamp.ToString()
+            }
+            
+            $result | ConvertTo-Json -Compress
         } catch {
-            @{
+            $errorResult = @{
                 bbm = ""
                 bsn = ""
                 gid = 0
@@ -154,12 +171,30 @@ class HardwareInfoCache:
                 mac = ""
                 osn = ""
                 osi = ""
-            } | ConvertTo-Json -Compress
+            }
+            $errorResult | ConvertTo-Json -Compress
         }
         '''
         
         try:
-            result = self._run_cmd(f'powershell -Command "{ps_script}"')
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.ps1', delete=False, encoding='utf-8') as f:
+                f.write(ps_script)
+                script_path = f.name
+            
+            try:
+                result = subprocess.check_output(
+                    ['powershell', '-ExecutionPolicy', 'Bypass', '-File', script_path],
+                    stderr=subprocess.STDOUT,
+                    timeout=15,
+                    text=True,
+                    encoding='utf-8'
+                ).strip()
+            finally:
+                try:
+                    os.unlink(script_path)
+                except:
+                    pass
+                    
             if result:
                 data = json.loads(result)
                 # Extract timestamp from Windows date string if present
@@ -175,42 +210,47 @@ class HardwareInfoCache:
                     data.get('osn', ''),
                     osi_timestamp
                 )
-        except (json.JSONDecodeError, KeyError, Exception) as e:
-            import logging
-            logging.warning(f"PowerShell optimized method failed: {e}, falling back to alternative method...")
-        
-        # Fallback method using simpler commands
-        return self._gather_windows_info_fallback()
+        except (json.JSONDecodeError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired, Exception) as e:
+            logger.warning(f"PowerShell optimized method failed: {e}, falling back to alternative method...")
+
+            # If previous method didn't work, fallback method using WMIC
+            return self._gather_windows_info_fallback()
     
     def _extract_windows_timestamp(self, date_str):
         """Extract Unix timestamp from Windows date string"""
-        import re
-        import datetime
-        
         if not date_str:
             return ""
             
         try:
-            # Check if it's in /Date(timestamp)/ format
-            match = re.search(r'/Date\((\d+)\)/', date_str)
-            if match:
-                # Convert from milliseconds to seconds
-                timestamp_ms = int(match.group(1))
-                return str(timestamp_ms)
-            
-            # Try to parse as regular datetime string
-            # Common Windows datetime formats (based on the actual output we saw)
+            # First try to parse as Unix timestamp (in seconds)
+            timestamp = int(date_str)
+            # Check if it's a reasonable timestamp (between 1990 and 2050)
+            if 631152000 <= timestamp <= 2524608000:
+                return str(timestamp)
+        except (ValueError, TypeError):
+            pass
+        
+        try:
+            # Try parsing as Windows WMI timestamp format (YYYYMMDDhhmmss.ffffff+UUU)
+            if len(date_str) >= 14:
+                dt_part = date_str[:14]
+                dt = datetime.datetime.strptime(dt_part, "%Y%m%d%H%M%S")
+                epoch = datetime.datetime(1970, 1, 1)
+                return str(int((dt - epoch).total_seconds()))
+        except (ValueError, TypeError):
+            pass
+        
+        try:
+            # Common Windows datetime formats
             formats = [
-                "%m/%d/%Y %H:%M:%S",  # 03/03/2025 14:26:45
-                "%d/%m/%Y %H:%M:%S",  # 03/03/2025 14:26:45 (day/month)
-                "%m/%d/%Y %I:%M:%S %p",  # 12/31/2024 3:00:00 PM
+                "%m/%d/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M:%S", 
+                "%m/%d/%Y %I:%M:%S %p",
                 "%Y-%m-%d %H:%M:%S",
                 "%Y-%m-%d %I:%M:%S %p"
             ]
             
-            # Clean the date string
             date_str = date_str.strip()
-            
             for fmt in formats:
                 try:
                     dt = datetime.datetime.strptime(date_str, fmt)
@@ -218,14 +258,12 @@ class HardwareInfoCache:
                     return str(int((dt - epoch).total_seconds()))
                 except ValueError:
                     continue
-                    
         except Exception:
             pass
             
         return ""
-    
     def _gather_windows_info_fallback(self):
-        """Fallback method for Windows using simpler WMI commands"""
+        """Fallback method for Windows using simpler WMI commands (CMD & PowerShell)"""
         try:
             # Get basic info with individual commands
             bbm = self._run_cmd('wmic bios get Manufacturer /value').split('=')[-1].strip() if self._run_cmd('wmic bios get Manufacturer /value') else ""
@@ -269,17 +307,16 @@ class HardwareInfoCache:
             # Get OS install date
             osi = ""
             try:
-                install_date_str = self._run_cmd('powershell -Command "(Get-CimInstance -ClassName Win32_OperatingSystem).InstallDate.ToString()"')
+                install_date_str = self._run_cmd('wmic os get InstallDate /value').split('=')[-1].strip() if self._run_cmd('wmic os get InstallDate /value') else ""
                 if install_date_str:
-                    osi = self._extract_windows_timestamp(install_date_str)
+                    osi = install_date_str.split('.')[0] # Remove milliseconds
             except Exception:
                 pass
             
             return (bbm, bsn, gid, hsn, msn, mac, osn, osi)
             
         except Exception as e:
-            import logging
-            logging.error(f"Windows fallback method failed: {e}, using default values")
+            logger.error(f"Windows fallback method failed: {e}, using default values")
             # Return default values to prevent complete failure
             return ("Unknown", "Unknown", 0, "Unknown", "Unknown", "", "Unknown", "")
 
@@ -314,8 +351,7 @@ class HardwareInfoCache:
             return "", bsn, gid, hsn, msn, mac, "", "" 
         except Exception as e:
             # In case of error, use default values
-            import logging
-            logging.error(f"Error gathering macOS hardware info: {str(e)}")
+            logger.error(f"Error gathering macOS hardware info: {str(e)}")
             return "", "macOS-Unknown", 0, "disk0", "macOS-Unknown-UUID", "", "", ""
 
 @dataclass
@@ -391,6 +427,18 @@ class PCSign:
         signature = hmac.new(self.sign_key(), payload.encode(), hashlib.sha256).digest()
         return f"{payload}.{self.base64url_encode(signature)}"
 
+
+def extract_user_info_from_jwt(jwt_token: str) -> Tuple[str, str, str]:
+    """Extracts user & persona ID and the username from a JWT token."""
+    try:
+        _, payload, _ = jwt_token.split('.')
+        decoded_payload = base64.urlsafe_b64decode(payload + '==').decode('utf-8')
+        data = json.loads(decoded_payload)['nexus']
+
+        return data.get('pid', ''), data.get('psid', ''), data.get('psif', [{}])[0].get('dis', '')
+    except Exception as e:
+        logger.error(f"Failed to extract user info from JWT: {e}")
+        return '', '', ''
 
 def generate_pc_sign_fast(sv: PCSignVersion = random.choice(list(PCSignVersion))) -> str:
     return PCSign.generate_fast(sv)

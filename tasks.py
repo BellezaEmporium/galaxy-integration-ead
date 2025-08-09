@@ -2,7 +2,7 @@ import os
 import sys
 import json
 import tempfile
-from shutil import rmtree, which, copy
+from shutil import rmtree, which
 from distutils.dir_util import copy_tree
 
 from invoke import task
@@ -46,7 +46,7 @@ def build(c, output='output', ziparchive=None):
     args = [
         'pip', 'install',
         '-r', tmp.name,
-        '--python-version', '37',
+        '--python-version', '37', # Galaxy requires Python 3.7
         '--platform', PLATFORM,
         '--target "{}"'.format(output),
         '--no-compile',
