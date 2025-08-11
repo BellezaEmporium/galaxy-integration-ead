@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from operator import is_
 import pathlib
 import platform
 import re
@@ -10,13 +9,11 @@ import sys
 import time
 import webbrowser
 from functools import partial
-from typing import Any, Callable, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable, Tuple
+from typing import Any, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable, Tuple, Callable
 from urllib.parse import urlparse, parse_qs
 
 from galaxy.api.consts import LicenseType, Platform
-from galaxy.api.errors import (
-    AuthenticationRequired, BackendError, UnknownBackendResponse, UnknownError
-)
+from galaxy.api.errors import AuthenticationRequired, BackendError, UnknownBackendResponse, UnknownError
 from galaxy.api.plugin import create_and_run_plugin, Plugin
 from galaxy.api.types import (
     Achievement, Authentication, UserInfo, Game, GameTime, LicenseInfo, LocalGame,
@@ -39,19 +36,16 @@ from pcsign_hash import preload_pc_sign_cache, generate_pc_sign_fast, extract_us
 
 logger = logging.getLogger(__name__)
 
-def is_windows():
-    return platform.system().lower() == "windows"
-
+# Constants
 LOCAL_GAMES_CACHE_VALID_PERIOD = 5 * 60  # 5 minutes
+IS_WINDOWS = platform.system().lower() == "windows"
 
-def regex_pattern(regex):
-    return ".*" + re.escape(regex) + ".*"
-
-JS = {regex_pattern(r"juno/login?execution"): [
-r'''
-    document.getElementById("rememberMe").checked = true;
-'''
-]}
+# JavaScript injection for login page
+LOGIN_JS = {
+    ".*" + re.escape(r"juno/login?execution") + ".*": [
+        'document.getElementById("rememberMe").checked = true;'
+    ]
+}
 
 MultiplayerId = NewType("MultiplayerId", str)
 GameId = NewType("GameId", str)  # eg. Origin.OFR:12345 or Origin.OFR:12345@epic
@@ -69,7 +63,7 @@ class GameLibrarySettingsContext(NamedTuple):
 
 
 class AuthenticationManager:
-    """Handles all authentication-related functionality."""
+    """Handles authentication functionality."""
     
     def __init__(self, http_client: AuthenticatedHttpClient, backend_client: EABackendClient):
         self.http_client = http_client
@@ -89,12 +83,10 @@ class AuthenticationManager:
         return self.http_client.is_authenticated()
     
     def check_authenticated(self):
-        """Raises AuthenticationRequired if not authenticated."""
         if not self.is_authenticated():
             raise AuthenticationRequired("User not authenticated")
     
     async def begin_auth_flow(self) -> NextStep:
-        """Start new authentication flow."""
         try:
             pc_sign = generate_pc_sign_fast()
         except Exception as e:
@@ -103,41 +95,39 @@ class AuthenticationManager:
         
         params = {
             "window_title": "Login to EA Desktop",
-            "window_width": 495 if is_windows() else 480,
-            "window_height": 850 if is_windows() else 825,
+            "window_width": 495 if IS_WINDOWS else 480,
+            "window_height": 850 if IS_WINDOWS else 825,
             "start_uri": f"https://accounts.ea.com/connect/auth"
                          f"?response_type=code&client_id=JUNO_PC_CLIENT&display=junoClient/login"
                          f"&redirect_uri=qrc:///html/login_successful.html"
                          f"&locale=en_US&pc_sign={pc_sign}",
             "end_uri_regex": "qrc:/html/login_successful.html.*"
         }
-        return NextStep("web_session", params, js=JS)
+        return NextStep("web_session", params, js=LOGIN_JS)
     
     async def authenticate_with_code(self, code: str) -> Tuple[str, str, str]:
-        """Authenticate using authorization code and return user info."""
-        if code:
-            await self.http_client._exchange_auth_code_for_token(code)
-        else:
+        if not code:
             raise AuthenticationRequired("No authorization code provided")
         
+        await self.http_client._exchange_auth_code_for_token(code)
         return await self.get_identity()
     
     async def get_identity(self) -> Tuple[str, str, str]:
-        """Get user identity from JWT token or backend."""
         try:
-            # Try to extract from JWT token first
+            # Try JWT extraction first
             if hasattr(self.http_client, '_access_token') and self.http_client._access_token:
                 try:
-                    logger.debug("Attempting to get identity from JWT extraction")
-                    self._user_id, self._persona_id, user_name = extract_user_info_from_jwt(self.http_client._access_token)
-                    logger.info(f"Identity successfully obtained from JWT extraction: {user_name}")
+                    self._user_id, self._persona_id, user_name = extract_user_info_from_jwt(
+                        self.http_client._access_token
+                    )
+                    logger.info(f"Identity obtained from JWT: {user_name}")
                     return self._user_id, self._persona_id, user_name
                 except Exception as e:
-                    logger.warning(f"Failed to extract from JWT: {e}")
+                    logger.warning(f"JWT extraction failed: {e}")
             
             # Fallback to backend
             self._user_id, self._persona_id, user_name = await self.backend_client.get_identity()
-            logger.info(f"Identity successfully obtained from backend: {user_name}")
+            logger.info(f"Identity obtained from backend: {user_name}")
             return self._user_id, self._persona_id, user_name
             
         except Exception as e:
@@ -146,7 +136,7 @@ class AuthenticationManager:
 
 
 class CacheManager:
-    """Manages persistent caching for the plugin."""
+    """Manages persistent caching."""
     
     def __init__(self, plugin_instance):
         self.plugin = plugin_instance
@@ -171,17 +161,13 @@ class CacheManager:
         self._offer_id_cache = value
         self.plugin.push_cache()
     
-    def get_offer_from_cache(self, offer_id: OfferId) -> Optional[Json]:
-        return self._offer_id_cache.get(offer_id)
-    
     def cache_offers(self, offers: Dict[OfferId, Json]):
-        """Cache multiple offers."""
         self._offer_id_cache.update(offers)
         self.plugin.push_cache()
 
 
 class LocalGameManager:
-    """Manages local game detection and status updates."""
+    """Manages local game detection."""
     
     def __init__(self, cache_manager: CacheManager):
         self.cache_manager = cache_manager
@@ -190,20 +176,16 @@ class LocalGameManager:
         self._local_games_update_in_progress = False
     
     def update_local_games(self):
-        """Update local games list."""
         return update_local_games(self)
     
     def get_local_game_status(self):
-        """Get local game status changes."""
         return local_game_status(self)
     
     @property
     def _offer_id_cache(self):
-        """Provide interface expected by lgames_manifests functions."""
         return self.cache_manager.offer_id_cache
     
     def should_update_cache(self) -> bool:
-        """Check if local games cache should be updated."""
         return (
             not self._local_games_update_in_progress and
             time.time() - self._local_games_last_update >= LOCAL_GAMES_CACHE_VALID_PERIOD
@@ -211,14 +193,14 @@ class LocalGameManager:
 
 
 class EAPlugin(Plugin):
-    """Main EA Desktop plugin class with simplified, modular architecture."""
+    """Main EA Desktop plugin class."""
     
     def __init__(self, reader, writer, token):
         super().__init__(Platform.Origin, __version__, reader, writer, token)
         
         # Initialize HTTP client and backend
         self._http_client = AuthenticatedHttpClient()
-        self._http_client.set_auth_lost_callback(lambda: self.lost_authentication())
+        self._http_client.set_auth_lost_callback(self.lost_authentication)
         self._http_client.set_cookies_updated_callback(self._update_stored_cookies)
         self._http_client.set_save_lats_callback(self._save_lats)
         self._http_client.set_save_tokens_callback(self._store_tokens)
@@ -235,21 +217,22 @@ class EAPlugin(Plugin):
 
     async def _prefetch_offers_background(self):
         try:
-            # Throttle prefetch to avoid hammering right after startup
             now = int(time.time())
+            # Throttle prefetch
             if now - self._last_offers_prefetch < 60:
                 return
             # Only if authenticated and token is valid
             if not self._auth_manager.is_authenticated() or not self._http_client.is_access_token_valid():
                 return
-            # let the session settle a bit after auth/login
-            await asyncio.sleep(2)
+            
+            await asyncio.sleep(2)  # Let session settle
             entitlements = await self._backend_client.get_entitlements()
-            offer_ids: List[OfferId] = []
-            for e in entitlements:
-                origin_offer_id = e.get("originOfferId")
-                if isinstance(origin_offer_id, str) and origin_offer_id:
-                    offer_ids.append(OfferId(origin_offer_id))
+            offer_ids = [
+                OfferId(e["originOfferId"]) 
+                for e in entitlements 
+                if e.get("originOfferId")
+            ]
+            
             if offer_ids:
                 await self._get_offers(offer_ids)
             self._last_offers_prefetch = now
@@ -272,125 +255,105 @@ class EAPlugin(Plugin):
     def _offer_id_cache(self, value: Dict[OfferId, Json]):
         self._cache_manager.offer_id_cache = value
 
+    def _check_authenticated(self):
+        self._auth_manager.check_authenticated()
+    
     async def shutdown(self):
         await self._http_client.close()
 
     def tick(self):
-        self.handle_local_game_update_notifications()    
+        self.handle_local_game_update_notifications()
     
-    def _check_authenticated(self):
-        self._auth_manager.check_authenticated()
-    
-    async def authenticate(self, stored_credentials):
+    async def authenticate(self, stored_credentials=None):
         if stored_credentials:
             try:
+                # Load cookies
                 cookies = stored_credentials.get("cookies")
                 if cookies:
                     self._http_client._cookie_jar.update_cookies(cookies)
                 
+                # Load tokens
                 access_token = stored_credentials.get("access_token")
                 refresh_token = stored_credentials.get("refresh_token")
-
-                # Load tokens into http client
                 if access_token:
                     self._http_client._access_token = access_token
                 if refresh_token:
                     self._http_client._refresh_token = refresh_token
 
-                # If we have a valid access token, try to proceed without refresh
+                # Try with valid access token
                 if access_token and self._http_client.is_access_token_valid():
                     try:
                         user_id, persona_id, user_name = await self._auth_manager.get_identity()
-                        try:
-                            asyncio.create_task(self._prefetch_offers_background())
-                        except Exception:
-                            pass
+                        asyncio.create_task(self._prefetch_offers_background())
                         return Authentication(user_id, user_name)
                     except Exception as e:
-                        logger.info(f"Stored access token may be invalid, will attempt refresh if possible: {e}")
+                        logger.info(f"Stored access token invalid, trying refresh: {e}")
 
-                # If we have a refresh token, attempt to refresh
+                # Try refresh if available
                 if refresh_token:
                     try:
                         await self._force_refresh_access_token()
                         user_id, persona_id, user_name = await self._auth_manager.get_identity()
-                        try:
-                            asyncio.create_task(self._prefetch_offers_background())
-                        except Exception:
-                            pass
+                        asyncio.create_task(self._prefetch_offers_background())
                         return Authentication(user_id, user_name)
                     except Exception as e:
-                        logger.info(f"Stored refresh token failed, starting fresh auth: {e}")
+                        logger.info(f"Refresh token failed, starting fresh auth: {e}")
                         
             except Exception as e:
                 logger.error(f"Error processing stored credentials: {e}")
         
-        # Start new authentication flow
         logger.info("Starting new authentication flow")
         return await self._auth_manager.begin_auth_flow()
 
     async def _force_refresh_access_token(self):
+        if not self._http_client._refresh_token:
+            raise AuthenticationRequired("No refresh token available")
         try:
-            if not self._http_client._refresh_token:
-                raise AuthenticationRequired("No refresh token available")
             await self._http_client._refresh_access_token(self._http_client._refresh_token)
-        except AuthenticationRequired:
-            self.lost_authentication()
-            raise
         except Exception as e:
             logger.error(f"Failed to refresh access token: {e}")
             self.lost_authentication()
             raise AuthenticationRequired("Failed to refresh access token")
-    # Tokens are persisted via http client callback to avoid duplicates
-
     def _store_tokens(self, access_token, refresh_token):
         current_credentials = self.persistent_cache.get("credentials", {})
         if isinstance(current_credentials, str):
             current_credentials = {}
         
-        credentials = current_credentials.copy() if current_credentials else {}
+        credentials = current_credentials.copy()
         # Skip write if nothing changed
-        if (
-            credentials.get("access_token") == access_token and
-            credentials.get("refresh_token") == refresh_token
-        ):
+        if (credentials.get("access_token") == access_token and 
+            credentials.get("refresh_token") == refresh_token):
             return
-        credentials["access_token"] = access_token
-        credentials["refresh_token"] = refresh_token
+            
+        credentials.update({
+            "access_token": access_token,
+            "refresh_token": refresh_token
+        })
         self.store_credentials(credentials)
 
     async def pass_login_credentials(self, step, credentials, cookies):
-        logger.debug(f"Web process succeeded, passing credentials to plugin.")
+        logger.debug("Web process succeeded, passing credentials to plugin.")
         parsed_uri = urlparse(credentials["end_uri"])
 
-        if parsed_uri.query:
-            params = parse_qs(parsed_uri.query)
-            code = params.get("code", [None])[0]
-            if not code:
-                raise AuthenticationRequired("No authorization code found in callback URL")
-        else:
+        if not parsed_uri.query:
             raise AuthenticationRequired("Failed to extract query parameters from callback URL")
+        
+        params = parse_qs(parsed_uri.query)
+        code = params.get("code", [None])[0]
+        if not code:
+            raise AuthenticationRequired("No authorization code found in callback URL")
 
-        # Persist cookies received from the web session
-        try:
-            if cookies and isinstance(cookies, list):
-                cookie_dict = {}
-                for c in cookies:
-                    name = c.get("name")
-                    value = c.get("value")
-                    if name is not None and value is not None:
-                        cookie_dict[name] = value
+        # Persist cookies from web session
+        if cookies and isinstance(cookies, list):
+            try:
+                cookie_dict = {c["name"]: c["value"] for c in cookies if c.get("name") and c.get("value")}
                 if cookie_dict:
                     self._store_cookies(cookie_dict)
-        except Exception as e:
-            logger.warning(f"Failed to persist web cookies: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to persist web cookies: {e}")
 
         user_id, persona_id, user_name = await self._auth_manager.authenticate_with_code(code)
-    # Tokens already persisted via http client callback
-        try:
-            asyncio.create_task(self._prefetch_offers_background())
-        except Exception:
-            pass
+        asyncio.create_task(self._prefetch_offers_background())
         return Authentication(user_id, user_name)
 
     @staticmethod
@@ -399,12 +362,11 @@ class EAPlugin(Plugin):
         return OfferId(game_id.split('@')[0])
 
     async def _get_offers(self, offer_ids: Iterable[OfferId]) -> Dict[OfferId, Json]:
-        """Retrieves offer data from a list of offer IDs.
-        First checks the local cache, then makes requests for missing offers."""
+        """Retrieve offer data, checking cache first."""
         offers = {}
         missing_offers = []
         
-        # First check offers in the cache
+        # Check cache first
         for offer_id in offer_ids:
             cached_offer = self._offer_id_cache.get(offer_id)
             if cached_offer and isinstance(cached_offer, dict):
@@ -412,19 +374,20 @@ class EAPlugin(Plugin):
             else:
                 missing_offers.append(offer_id)
         
+        # Fetch missing offers
         if missing_offers:
             try:
                 gathered_offers = await self._backend_client.get_offers(missing_offers)
+                if isinstance(gathered_offers, dict):
+                    for key, offer in gathered_offers.items():
+                        if isinstance(offer, dict):
+                            origin_offer_id = offer.get('offerId') or offer.get('originOfferId') or key
+                            if origin_offer_id:
+                                offer_id = OfferId(origin_offer_id)
+                                offers[offer_id] = offer
+                                self._offer_id_cache[offer_id] = offer
             except Exception as e:
                 logger.error(f"Failed to fetch offers batch: {e}")
-                gathered_offers = {}
-            if isinstance(gathered_offers, dict):
-                for key, offer in gathered_offers.items():
-                    if isinstance(offer, dict):
-                        origin_offer_id = offer.get('offerId') or offer.get('originOfferId') or key
-                        if origin_offer_id:
-                            offers[OfferId(origin_offer_id)] = offer
-                            self._offer_id_cache[OfferId(origin_offer_id)] = offer
                 
         return offers
 
@@ -432,11 +395,11 @@ class EAPlugin(Plugin):
         self._check_authenticated()
 
         entitlements = await self._backend_client.get_entitlements()
-        offer_ids: List[OfferId] = []
-        for e in entitlements:
-            origin_offer_id = e.get("originOfferId")
-            if isinstance(origin_offer_id, str) and origin_offer_id:
-                offer_ids.append(OfferId(origin_offer_id))
+        offer_ids = [
+            OfferId(e["originOfferId"]) 
+            for e in entitlements 
+            if e.get("originOfferId")
+        ]
         offers = await self._get_offers(offer_ids)
 
         games = []
@@ -444,20 +407,14 @@ class EAPlugin(Plugin):
             if not isinstance(offer, dict):
                 continue
             display_name = offer.get('displayName') or offer.get('game_product', {}).get('name')
-            if not display_name:
-                continue
             raw_offer_id = offer.get('offerId') or str(origin_offer_id)
-            if not raw_offer_id:
-                continue
-            game_id = GameId(raw_offer_id)
-            games.append(
-                Game(
-                    game_id,
+            if display_name and raw_offer_id:
+                games.append(Game(
+                    GameId(raw_offer_id),
                     display_name,
                     None,
                     LicenseInfo(LicenseType.SinglePurchase, None)
-                )
-            )
+                ))
         return games
 
     async def prepare_achievements_context(self, game_ids: List[GameId]) -> AchievementsImportContext:
@@ -649,8 +606,7 @@ class EAPlugin(Plugin):
             for user_id, (user_name, avatar_url) in (await self._backend_client.get_friends()).items()
         ]
 
-    @staticmethod
-    def _open_uri(uri):
+    def _open_uri(self, uri):
         logger.info(f"Opening {uri}")
         webbrowser.open(uri)
     
@@ -697,7 +653,7 @@ class EAPlugin(Plugin):
 
         self._open_uri(uri)
 
-    if is_windows():
+    if IS_WINDOWS:
         async def uninstall_game(self, game_id: GameId):
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, partial(subprocess.run, ["control", "appwiz.cpl"]))    
@@ -720,27 +676,24 @@ class EAPlugin(Plugin):
         self.store_credentials(current_credentials)
 
     def _update_stored_cookies(self, morsels):
-        cookies = {}
-        for morsel in morsels:
-            cookies[morsel.key] = morsel.value
+        cookies = {morsel.key: morsel.value for morsel in morsels}
         self._store_cookies(cookies)
 
     async def get_local_games(self) -> List[LocalGame]:
-        # If offers cache is empty, schedule a background prefetch and continue using current cache
+        # If offers cache is empty, schedule background prefetch
         if not self._offer_id_cache:
-            try:
-                asyncio.create_task(self._prefetch_offers_background())
-            except Exception:
-                pass
+            asyncio.create_task(self._prefetch_offers_background())
 
         if self._local_game_manager._local_games_update_in_progress:
-            logger.debug("Local games are being updated, returning cached values")
-            return self._local_game_manager._local_games if isinstance(self._local_game_manager._local_games, list) else []
+            logger.debug("Local games update in progress, returning cached values")
+            return (self._local_game_manager._local_games 
+                   if isinstance(self._local_game_manager._local_games, list) else [])
         
         loop = asyncio.get_running_loop()
         try:
             self._local_game_manager._local_games_update_in_progress = True
-            local_games = await loop.run_in_executor(None, partial(self._local_game_manager.update_local_games))
+            local_games = await loop.run_in_executor(None, 
+                partial(self._local_game_manager.update_local_games))
             self._local_game_manager._local_games_last_update = int(time.time())
             self._local_game_manager._local_games = local_games
             return local_games
@@ -748,42 +701,38 @@ class EAPlugin(Plugin):
             self._local_game_manager._local_games_update_in_progress = False
 
     def handle_local_game_update_notifications(self):
-        # Skip notifications until authenticated with a valid token to avoid early 400s
+        # Skip notifications until authenticated with valid token
         if not self._auth_manager.is_authenticated() or not self._http_client.is_access_token_valid():
             return
-        # If offers cache isn't ready yet, schedule background prefetch and skip this tick
+        # If offers cache isn't ready, schedule background prefetch
         if not self._offer_id_cache:
-            try:
-                asyncio.create_task(self._prefetch_offers_background())
-            except Exception:
-                pass
+            asyncio.create_task(self._prefetch_offers_background())
             return
+        # Don't overlap update operations
+        if self._local_game_manager._local_games_update_in_progress:
+            logger.debug("Local games update in progress, skipping")
+            return
+        if not self._local_game_manager.should_update_cache():
+            logger.debug("Local games cache is fresh")
+            return
+
         async def notify_local_games_changed():
-            notify_list = []
             try:
                 self._local_game_manager._local_games_update_in_progress = True
-                notify_list = await loop.run_in_executor(None, partial(self._local_game_manager.get_local_game_status))
+                loop = asyncio.get_running_loop()
+                notify_list = await loop.run_in_executor(None, 
+                    partial(self._local_game_manager.get_local_game_status))
                 self._local_game_manager._local_games_last_update = int(time.time())
+                
+                for local_games_notify in notify_list:
+                    self.update_local_game_status(local_games_notify)
             finally:
                 self._local_game_manager._local_games_update_in_progress = False
 
-            for local_games_notify in notify_list:
-                self.update_local_game_status(local_games_notify)
-
-        # don't overlap update operations
-        if self._local_game_manager._local_games_update_in_progress:
-            logger.debug("Local games are being updated, skipping cache update")
-            return
-
-        if not self._local_game_manager.should_update_cache():
-            logger.debug("Local games cache is fresh enough")
-            return
-
-        loop = asyncio.get_running_loop()
         asyncio.create_task(notify_local_games_changed())
 
     async def prepare_local_size_context(self, game_ids: List[GameId]) -> Dict[str, pathlib.PurePath]:
-        if not is_windows():
+        if not IS_WINDOWS:
             return {}
         game_id_manifest_map: Dict[str, pathlib.PurePath] = {}
         for game_id in game_ids:
@@ -837,33 +786,36 @@ class EAPlugin(Plugin):
 
     def handshake_complete(self):
         def game_time_decoder(cache: dict) -> Dict[OfferId, GameTime]:
-            outdated_keys = [key.split('@')[0] for key in cache if "@" in key]
-            for i in outdated_keys:
-                cache.pop(i, None)
+            # Remove outdated keys
+            outdated_keys = [key for key in cache if "@" in key]
+            for key in outdated_keys:
+                cache.pop(key, None)
             return {
                 game_id: GameTime(entry["game_id"], entry["time_played"], entry.get("last_played_time"))
                 for game_id, entry in cache.items()
                 if entry and game_id
             }
-        def safe_decode(_cache, _key: str, _decoder: Callable):
-            if not _cache:
+
+        def safe_decode(cache, key: str, decoder: Callable):
+            if not cache:
                 return {}
-            if _decoder is None:
-                _decoder = lambda x: x
             try:
-                if isinstance(_cache, str):
-                    return _decoder(json.loads(_cache))
-                return _decoder(_cache)
+                if isinstance(cache, str):
+                    return decoder(json.loads(cache)) if decoder else json.loads(cache)
+                return decoder(cache) if decoder else cache
             except Exception:
-                logger.exception("Failed to decode persistent '%s' cache", _key)
+                logger.exception(f"Failed to decode persistent '{key}' cache")
                 return {}
+
         cache_decoders = {
             "offers": None,
             "game_time": game_time_decoder,
         }
+        
         for key, decoder in cache_decoders.items():
             decoded = safe_decode(self.persistent_cache.get(key), key, decoder)
             self.persistent_cache[key] = json.dumps(decoded)
+        
         self._http_client.load_lats_from_cache(self.persistent_cache.get('lats'))
         self._http_client.set_save_lats_callback(self._save_lats)
 
