@@ -40,10 +40,10 @@ While the plugin is proven to work on Windows, I *cannot confirm* that this plug
 
 ## Installation
 
-1. Download the plugin from the [releases page](https://github.com/BellezaEmporium/galaxy-integration-ead/releases).
+1. Download the plugin from the [releases page](https://github.com/BellezaEmporium/galaxy-integration-ead/releases). You'll have multiple versions, one for Windows, one for macOS, and the Galaxy autoupgrade package. The Galaxy autoupgrade package is here so that GOG Galaxy can automatically upgrade the plugin by itself. If it's your first time with the plugin, it's recommended to use the OS-targeted releases.
 2. Unzip the archive.
-3. Extract the contents of the file into the Origin plugin's location : origin_7f53219b-4e2b-4591-9f4f-dfc5f4ba9eb0.
-4. Start GOG Galaxy
+3. If you picked one of the OS-targeted releases, you can just use the "install" file, that will automatically unzip and move the contents of the plugin to the right place. Otherwise, extract the contents of the file into Origin's plugin location : origin_7f53219b-4e2b-4591-9f4f-dfc5f4ba9eb0.
+4. Start GOG Galaxy, and enjoy !
 
 ## Configuration
 
@@ -52,7 +52,7 @@ Just login to your EA Desktop account from GOG Galaxy, and enjoy your games.
 ## Kudos
 
 - [@imLinguin](https://github.com/imLinguin) for helping me on the EA login logic & various hints
-- [@Nutzzz](https://github.com/Nutzzz) for describing me the IS file decryption and testing the plugin on various aspects.
+- [@Nutzzz](https://github.com/Nutzzz) for describing me the IS file decryption and testing the plugin on various aspects
 - [The Playnite community](https://github.com/JosefNemec/Playnite), you guys rock !
 - All the plugin testers
 - The GOG Cafe / Wing of GOG Discord servers
