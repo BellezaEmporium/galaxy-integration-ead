@@ -1,3 +1,5 @@
+import base64
+import json
 import logging
 import time
 import asyncio
@@ -9,6 +11,7 @@ from yarl import URL
 from galaxy.api.errors import AccessDenied, AuthenticationRequired, BackendError, NetworkError
 
 logger = logging.getLogger(__name__)
+
 logger.setLevel(logging.INFO)
 
 # HTTP request timeout and retry configuration
@@ -42,6 +45,7 @@ class AuthenticatedHttpClient(HttpClient):
         self._save_tokens_callback = None
         self._token_lock = asyncio.Lock()
         self._access_token_expires_at = None
+        self._refreshing_token = False  # Flag to prevent multiple saves during refresh
         self._static_headers = {
             "User-Agent": "EAApp/PC/13.468.0.5981",
             "x-client-id": "EAX-JUNO-CLIENT"
@@ -209,20 +213,13 @@ class AuthenticatedHttpClient(HttpClient):
                     self._access_token_expires_at = now + int(expires_in) - 60  # 60s slack
                 else:
                     # Fallback: parse JWT 'exp'
-                    try:
-                        parts = self._access_token.split('.')
-                        if len(parts) >= 2:
-                            import base64, json
-                            payload = base64.urlsafe_b64decode(parts[1] + '==').decode('utf-8')
-                            exp = json.loads(payload).get('exp')
-                            if isinstance(exp, (int, float)):
-                                self._access_token_expires_at = int(exp) - 60
-                    except Exception:
-                        self._access_token_expires_at = None
+                    exp = _parse_jwt_exp(self._access_token)
+                    if exp:
+                        self._access_token_expires_at = exp - 60
                 self._save_lats()
                 
-                # Save tokens via callback if available
-                if self._save_tokens_callback:
+                # Save tokens via callback if available (only if not in refresh cycle)
+                if self._save_tokens_callback and not self._refreshing_token:
                     self._save_tokens_callback(self._access_token, self._refresh_token)
                 
                 logger.info("Successfully exchanged code for tokens")
@@ -241,16 +238,19 @@ class AuthenticatedHttpClient(HttpClient):
             if not refresh_token:
                 raise AuthenticationRequired("No refresh token available")
             
-            url = "https://accounts.ea.com/connect/token"
-            headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            params = {
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token
-            }
+            # Set flag to prevent multiple saves during refresh
+            self._refreshing_token = True
             
             try:
+                url = "https://accounts.ea.com/connect/token"
+                headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                params = {
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token
+                }
+                
                 logger.info("Using stored credentials to refresh the access token...")
                 async with self._session.post(url, headers=headers, data=params) as response:
                     response.raise_for_status()
@@ -266,19 +266,15 @@ class AuthenticatedHttpClient(HttpClient):
                         self._access_token_expires_at = now + int(expires_in) - 60
                     else:
                         try:
-                            parts = self._access_token.split('.')
-                            if len(parts) >= 2:
-                                import base64, json
-                                payload = base64.urlsafe_b64decode(parts[1] + '==').decode('utf-8')
-                                exp = json.loads(payload).get('exp')
-                                if isinstance(exp, (int, float)):
-                                    self._access_token_expires_at = int(exp) - 60
+                            exp = _parse_jwt_exp(self._access_token)
+                            if exp:
+                                self._access_token_expires_at = exp - 60
                         except Exception:
                             self._access_token_expires_at = None
                     logger.info("Successfully refreshed the access token.")
                     self._save_lats()
                     
-                    # Save tokens via callback if available
+                    # Save tokens via callback if available - always save on successful refresh
                     if self._save_tokens_callback:
                         self._save_tokens_callback(self._access_token, self._refresh_token)
                     
@@ -297,11 +293,19 @@ class AuthenticatedHttpClient(HttpClient):
                 if self._auth_lost_callback:
                     self._auth_lost_callback()
                 raise AccessDenied("Failed to refresh token")
+            
+            finally:
+                # Always reset the flag
+                self._refreshing_token = False
 
     def _save_lats(self):
         if self._save_lats_callback is not None:
-            self._last_access_token_success = int(time.time())
-            self._save_lats_callback(self._last_access_token_success)
+            new_lats = int(time.time())
+            # Only save if the value has changed significantly (> 1 second)
+            if (self._last_access_token_success is None or 
+                abs(new_lats - self._last_access_token_success) > 1):
+                self._last_access_token_success = new_lats
+                self._save_lats_callback(self._last_access_token_success)
 
     def set_save_lats_callback(self, callback):
         self._save_lats_callback = callback
@@ -350,5 +354,40 @@ class AuthenticatedHttpClient(HttpClient):
         if not self._access_token:
             return False
         if self._access_token_expires_at is None:
+            # If we can't determine expiration, try to parse JWT
+            exp = _parse_jwt_exp(self._access_token)
+            if exp:
+                self._access_token_expires_at = exp
+                return time.time() < self._access_token_expires_at
+            # If we can't parse, assume it's valid (fallback behavior)
             return True
         return time.time() < self._access_token_expires_at
+    
+def _parse_jwt_exp(jwt_token: str) -> Optional[int]:
+    """Parse JWT token and extract expiration timestamp.
+    
+    Args:
+        jwt_token: The JWT token string
+        
+    Returns:
+        Expiration timestamp as int, or None if parsing fails
+    """
+    try:
+        parts = jwt_token.split('.')
+        if len(parts) < 2:
+            return None
+            
+        # Correct base64 padding
+        payload_b64 = parts[1]
+        payload_b64 += '=' * (4 - len(payload_b64) % 4) if len(payload_b64) % 4 else ''
+        
+        payload_bytes = base64.urlsafe_b64decode(payload_b64)
+        payload = json.loads(payload_bytes.decode('utf-8'))
+        
+        exp = payload.get('exp')
+        if isinstance(exp, (int, float)):
+            return int(exp)
+    except Exception as e:
+        logger.debug(f"Failed to parse JWT expiration: {e}")
+    
+    return None

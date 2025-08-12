@@ -310,25 +310,38 @@ class EAPlugin(Plugin):
             raise AuthenticationRequired("No refresh token available")
         try:
             await self._http_client._refresh_access_token(self._http_client._refresh_token)
+        except AuthenticationRequired:
+            # Re-raise authentication errors directly
+            raise AuthenticationRequired("Failed to refresh access token")  
         except Exception as e:
-            logger.error(f"Failed to refresh access token: {e}")
-            self.lost_authentication()
+            logger.error(f"Something went wrong while trying to refresh token: {e}")
+            # Only call lost_authentication if we have the callback set
+            if hasattr(self, 'lost_authentication'):
+                self.lost_authentication()
             raise AuthenticationRequired("Failed to refresh access token")
+        
     def _store_tokens(self, access_token, refresh_token):
         current_credentials = self.persistent_cache.get("credentials", {})
         if isinstance(current_credentials, str):
-            current_credentials = {}
+            try:
+                current_credentials = json.loads(current_credentials)
+            except (json.JSONDecodeError, TypeError):
+                current_credentials = {}
         
-        credentials = current_credentials.copy()
-        # Skip write if nothing changed
-        if (credentials.get("access_token") == access_token and 
-            credentials.get("refresh_token") == refresh_token):
+        # Skip write if nothing changed - compare actual values
+        current_access = current_credentials.get("access_token")
+        current_refresh = current_credentials.get("refresh_token")
+        
+        if (current_access == access_token and current_refresh == refresh_token):
+            logger.debug("Tokens unchanged, skipping store_credentials call")
             return
             
+        credentials = current_credentials.copy()
         credentials.update({
             "access_token": access_token,
             "refresh_token": refresh_token
         })
+        logger.debug("Storing updated tokens")
         self.store_credentials(credentials)
 
     async def pass_login_credentials(self, step, credentials, cookies):
@@ -539,7 +552,6 @@ class EAPlugin(Plugin):
         return game_time
 
     async def prepare_game_times_context(self, game_ids: List[GameId]) -> Any:
-        self._check_authenticated()
         offer_ids = [self._offer_id_from_game_id(game_id) for game_id in game_ids]
 
         try:
