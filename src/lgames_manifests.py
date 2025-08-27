@@ -126,7 +126,7 @@ def _cached_reg_value(hive: int, key_path: str, value_name: str) -> Optional[str
 
         # Not found in any view
         if last_error:
-            logger.debug(f"Registry key not found: {hive}\\{key_path}\\{value_name} ({last_error})")
+            return None
         return None
     except Exception as e:
         logger.error(f"Error accessing registry: {e}")
@@ -349,7 +349,6 @@ def update_local_games(self):
         if "displayName" not in game_data:
             continue
 
-        logger.info(f"Checking local game status for {offer_id}, game name is {game_data.get('displayName')}")
         state = LocalGameState.None_
         install_path = None
 
@@ -367,7 +366,6 @@ def update_local_games(self):
             exe_name = os.path.basename(install_path).lower()
             if exe_name in running_exes:
                 state |= LocalGameState.Running
-            logger.info(f"{offer_id} is installed at {install_path}")
 
         local_games.append(LocalGame(offer_id, state))
 

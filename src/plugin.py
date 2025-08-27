@@ -470,7 +470,7 @@ class EAPlugin(Plugin):
                 # Resolve achievement set
                 ach_set_val = offer_data.get("achievementSetOverride")
                 if not ach_set_val:
-                    logger.debug(f"No achievementSetOverride for offer {offer_id}")
+                    logger.debug(f"{offer_id} does not have any achievements.")
                     continue
                 ach_set = AchievementSet(str(ach_set_val))
                 slug_to_ach_set[game_slug] = ach_set

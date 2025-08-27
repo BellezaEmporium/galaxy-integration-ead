@@ -20,6 +20,10 @@ Json = Dict[str, Any]
 
 SubscriptionDetails = namedtuple('SubscriptionDetails', ['tier', 'end_time'])
 
+# The EA servers do not accept over 100 slugs/IDs, so we need to take that into account by batching.
+BATCH_SIZE = 100
+all_games = []
+
 class EABackendClient:
     def __init__(self, http_client):
         self._http_client = http_client
@@ -127,6 +131,10 @@ class EABackendClient:
                     or by_product_id.get(offer_id)
                     or {}
                 )
+
+                # Certain games will have identification data but without any product information.
+                # Skip those.
+                if not product: continue
 
                 display_type = str(legacy_offer.get('displayType', '')).replace('_', '').lower()
                 game_type = str(product.get('baseItem', {}).get('gameType', '')).lower()
@@ -386,11 +394,17 @@ class EABackendClient:
         try:
             slugs = [game['slug'] for game in response['data']['gameSearch']['items']]
             subscription_games = []
-            query2 = f"query{{games(slugs:{json.dumps(slugs)}){{items{{slug products{{items{{id name originOfferId availableInSubscription {{slug}} trialDetails {{ trialType }} baseItem {{ gameType }}}}}}}}}}}}"
-            url2 = f"{self._get_api_host()}?query={quote(query2)}"
-            games = await self._http_client.get(url2)
+            for i in range(0, len(slugs), BATCH_SIZE):
+                batch = slugs[i:i+BATCH_SIZE]
+
+                query = f"query{{games(slugs:{json.dumps(batch)}){{items{{slug products{{items{{id name originOfferId availableInSubscription {{slug}} trialDetails {{ trialType }} baseItem {{ gameType }}}}}}}}}}}}"
+                url = f"{self._get_api_host()}?query={quote(query)}"
+
+                # GET
+                games_batch = await self._http_client.get(url)
+                all_games.extend(games_batch.get("data", {}).get("games", {}).get("items", []))
             try:
-                for game in games.get('data', {}).get('games', {}).get('items', []):
+                for game in games_batch.get('data', {}).get('games', {}).get('items', []):
                     for game_product in game.get('products', {}).get('items', []):
                         # ditch trial games
                         if game_product.get('trialDetails'):
@@ -485,7 +499,7 @@ class EABackendClient:
                             )
                             break
             except (ValueError, KeyError) as e:
-                logger.exception("Can not parse backend response while getting subs games: %s, error %s", games, repr(e))
+                logger.exception("Can not parse backend response while getting subs games: %s, error %s", games_batch, repr(e))
                 raise UnknownBackendResponse()
             return subscription_games
         except (ValueError, KeyError) as e:

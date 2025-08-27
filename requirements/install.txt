@@ -1,12 +1,12 @@
 #use specific pip version for dependencies to work nicely
-pip==22.0.4
+pip==22.2
 pip-tools
 
-#protoc install.
+#core requirements
 requests
 
 #install requirements. 
-invoke==1.2.0
+invoke==2.2.0
 wheel
 psutil # look at the processes for games
 
