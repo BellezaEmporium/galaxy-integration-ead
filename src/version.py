@@ -1,7 +1,13 @@
-__version__ = "0.44.4"
+__version__ = "0.44.5"
 
 __changelog__ = {
     "unreleased":"""""",
+    "0.44.5":
+    """
+        - fixed subscription gathering
+        - improved game discovery
+        - actually check game time and achievements for subbed games.
+    """,
     "0.44.4":
     """
         - plugin has been reworked entirely for better maintainability

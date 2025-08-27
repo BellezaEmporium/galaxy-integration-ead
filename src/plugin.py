@@ -142,28 +142,27 @@ class CacheManager:
         self.plugin = plugin_instance
         self._game_time_cache = {}
         self._offer_id_cache = {}
-    
+
     @property
     def game_time_cache(self) -> Dict[OfferId, GameTime]:
+        # simple in-memory cache; persistence is managed explicitly by the plugin
         return self._game_time_cache
-    
-    @game_time_cache.setter 
+
+    @game_time_cache.setter
     def game_time_cache(self, value: Dict[OfferId, GameTime]):
         self._game_time_cache = value
-        self.plugin.push_cache()
-    
+
     @property
     def offer_id_cache(self) -> Dict[OfferId, Json]:
         return self._offer_id_cache
-    
+
     @offer_id_cache.setter
     def offer_id_cache(self, value: Dict[OfferId, Json]):
         self._offer_id_cache = value
-        self.plugin.push_cache()
-    
+
     def cache_offers(self, offers: Dict[OfferId, Json]):
+        # update in-memory cache only; plugin will decide when to persist
         self._offer_id_cache.update(offers)
-        self.plugin.push_cache()
 
 
 class LocalGameManager:
@@ -321,28 +320,43 @@ class EAPlugin(Plugin):
             raise AuthenticationRequired("Failed to refresh access token")
         
     def _store_tokens(self, access_token, refresh_token):
-        current_credentials = self.persistent_cache.get("credentials", {})
-        if isinstance(current_credentials, str):
-            try:
-                current_credentials = json.loads(current_credentials)
-            except (json.JSONDecodeError, TypeError):
-                current_credentials = {}
-        
-        # Skip write if nothing changed - compare actual values
-        current_access = current_credentials.get("access_token")
-        current_refresh = current_credentials.get("refresh_token")
-        
-        if (current_access == access_token and current_refresh == refresh_token):
-            logger.debug("Tokens unchanged, skipping store_credentials call")
-            return
-            
-        credentials = current_credentials.copy()
-        credentials.update({
-            "access_token": access_token,
-            "refresh_token": refresh_token
-        })
-        logger.debug("Storing updated tokens")
-        self.store_credentials(credentials)
+        # Centralize credential storage: only persist when tokens are available.
+        # Keep cookies previously captured in persistent cache, but don't rewrite repeatedly.
+        try:
+            current_credentials = self.persistent_cache.get("credentials", {})
+            if isinstance(current_credentials, str):
+                try:
+                    current_credentials = json.loads(current_credentials)
+                except (json.JSONDecodeError, TypeError):
+                    current_credentials = {}
+
+            current_access = current_credentials.get("access_token")
+            current_refresh = current_credentials.get("refresh_token")
+
+            # If tokens unchanged and cookies present, skip write
+            if (current_access == access_token and current_refresh == refresh_token):
+                logger.debug("Tokens unchanged, skipping store_credentials call")
+                return
+
+            credentials = current_credentials.copy()
+            credentials.update({
+                "access_token": access_token,
+                "refresh_token": refresh_token
+            })
+
+            # Merge any pending cookies kept in memory under _pending_cookies
+            pending = getattr(self, '_pending_cookies', None)
+            if pending:
+                credentials['cookies'] = pending
+
+            logger.debug("Storing updated tokens and cookies")
+            # Single write to persistent storage
+            self.store_credentials(credentials)
+            # Clear pending cookies after successful store
+            if hasattr(self, '_pending_cookies'):
+                delattr(self, '_pending_cookies')
+        except Exception as e:
+            logger.exception(f"Failed to store tokens: {e}")
 
     async def pass_login_credentials(self, step, credentials, cookies):
         logger.debug("Web process succeeded, passing credentials to plugin.")
@@ -674,27 +688,41 @@ class EAPlugin(Plugin):
         self._open_uri("origin2://quit")
 
     def _store_cookies(self, cookies):
-        current_credentials = self.persistent_cache.get("credentials", {})
-        if isinstance(current_credentials, str):
-            try:
-                current_credentials = json.loads(current_credentials)
-            except:
-                current_credentials = {}
-        
-        # Skip write if unchanged
-        if current_credentials.get("cookies") == cookies:
-            return
-        current_credentials["cookies"] = cookies
-        self.store_credentials(current_credentials)
+        # Avoid writing to persistent storage on every cookie update.
+        # Keep cookies in-memory until tokens are available and then persisted by _store_tokens.
+        try:
+            # Keep pending cookies so _store_tokens can persist them together with tokens
+            self._pending_cookies = cookies
+        except Exception as e:
+            logger.exception(f"Failed to cache cookies in memory: {e}")
 
     def _update_stored_cookies(self, morsels):
-        cookies = {morsel.key: morsel.value for morsel in morsels}
-        self._store_cookies(cookies)
+        try:
+            cookies = {morsel.key: morsel.value for morsel in morsels}
+            self._store_cookies(cookies)
+        except Exception as e:
+            logger.exception(f"Failed to update stored cookies: {e}")
 
     async def get_local_games(self) -> List[LocalGame]:
-        # If offers cache is empty, schedule background prefetch
+        # If offers cache is empty, try to prefetch offers now (best-effort) so local detection
+        # can use offer metadata (gameSlug, install overrides). Fall back to background prefetch.
         if not self._offer_id_cache:
-            asyncio.create_task(self._prefetch_offers_background())
+            if self._auth_manager.is_authenticated() and self._http_client.is_access_token_valid():
+                try:
+                    entitlements = await self._backend_client.get_entitlements()
+                    offer_ids = [
+                        OfferId(e["originOfferId"]) 
+                        for e in entitlements 
+                        if e.get("originOfferId")
+                    ]
+                    if offer_ids:
+                        # populate offer cache synchronously (best-effort)
+                        await self._get_offers(offer_ids)
+                except Exception as e:
+                    logger.debug(f"Synchronous offers prefetch failed: {e}")
+            else:
+                # schedule background prefetch if we cannot fetch now
+                asyncio.create_task(self._prefetch_offers_background())
 
         if self._local_game_manager._local_games_update_in_progress:
             logger.debug("Local games update in progress, returning cached values")

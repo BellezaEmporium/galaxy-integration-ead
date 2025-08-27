@@ -51,7 +51,7 @@ class EABackendClient:
                             locale: "DEFAULT"
                             entitlementEnabled: true
                             storefronts: [EA]
-                            type: [DIGITAL_FULL_GAME, PACKAGED_FULL_GAME, DIGITAL_EXTRA_CONTENT, PACKAGED_EXTRA_CONTENT]
+                            type: [DIGITAL_FULL_GAME, PACKAGED_FULL_GAME]
                             platforms: [PC]
                             paging: { limit: 9999 }
                         ) {
@@ -380,23 +380,107 @@ class EABackendClient:
         elif tier == 'premium':
             api_tier = "origin-access-premier"
 
-        query = f"query{{gameSearch(filter: {{gameTypes: [BASE_GAME, COLLECTION], subscriptionAvailabilitiesWithFreeToPlay: [{api_tier}]}} paging: {{limit: 9999}}) {{items {{slug}}}}}}"
+        query = f"query{{gameSearch(filter: {{gameTypes: [BASE_GAME, COLLECTION], subscriptionAvailabilitiesWithFreeToPlay: [\"{api_tier}\"]}} paging: {{limit: 9999}}) {{items {{slug}}}}}}"
         url = f"{self._get_api_host()}?query={quote(query)}"
         response = await self._http_client.get(url)
         try:
             slugs = [game['slug'] for game in response['data']['gameSearch']['items']]
             subscription_games = []
-            query2 = f"query{{games(slugs:{json.dumps(slugs)}){{items{{slug products{{items{{id name originOfferId}}}}}}}}}}"
+            query2 = f"query{{games(slugs:{json.dumps(slugs)}){{items{{slug products{{items{{id name originOfferId availableInSubscription {{slug}} trialDetails {{ trialType }} baseItem {{ gameType }}}}}}}}}}}}"
             url2 = f"{self._get_api_host()}?query={quote(query2)}"
             games = await self._http_client.get(url2)
             try:
-                for game in games['data']['games']['items']:
-                    for game_product in game['products']['items']:
-                        if (tier == 'premium' and 'ea-play-pro' in game_product['id']) or ('ea-play' in game_product['id']):
+                for game in games.get('data', {}).get('games', {}).get('items', []):
+                    for game_product in game.get('products', {}).get('items', []):
+                        # ditch trial games
+                        if game_product.get('trialDetails'):
+                            continue
+
+                        # if product is a COLLECTION, fetch included product slugs and process them like normal products
+                        base_game_type = (game_product.get('baseItem') or {}).get('gameType', '') or ''
+                        if str(base_game_type).upper() == 'COLLECTION':
+                            try:
+                                offer_id = game_product.get('id')
+                                if not offer_id:
+                                    continue
+                                # Request product details for collection and its included products
+                                coll_query = (
+                                    "query{"
+                                    f"gameProducts(offerIds: {json.dumps([offer_id])}, locale: \"DEFAULT\")"
+                                    "{items{id name originOfferId baseItem {title gameType} gameSlug includedProducts {items { ... on GameProduct { slug } } } } }"
+                                    "}"
+                                )
+                                coll_url = f"{self._get_api_host()}?query={quote(coll_query)}"
+                                coll_resp = await self._http_client.get(coll_url)
+                                included_items = coll_resp.get('data', {}).get('gameProducts', {}).get('items', [])
+                                included_slugs = []
+                                for it in included_items:
+                                    for inc in (it.get('includedProducts') or {}).get('items', []):
+                                        slug = inc.get('slug')
+                                        if slug:
+                                            included_slugs.append(slug)
+
+                                if not included_slugs:
+                                    continue
+
+                                # Query details for included slugs and process them the same way as above
+                                inc_query = (
+                                    f"query{{games(slugs:{json.dumps(included_slugs)}){{items{{slug products{{items{{id name originOfferId availableInSubscription{{slug}} trialDetails{{trialType}}}}}}}}}}}}"
+                                )
+                                inc_url = f"{self._get_api_host()}?query={quote(inc_query)}"
+                                inc_games = await self._http_client.get(inc_url)
+                                for inc_game in inc_games.get('data', {}).get('games', {}).get('items', []):
+                                    for inc_product in inc_game.get('products', {}).get('items', []):
+                                        if inc_product.get('trialDetails'):
+                                            continue
+                                        matched = False
+                                        for avail in inc_product.get('availableInSubscription') or []:
+                                            slug_val = avail.get('slug', '')
+                                            if isinstance(slug_val, list):
+                                                slug_val = ','.join(str(s).lower() for s in slug_val)
+                                            else:
+                                                slug_val = str(slug_val).lower()
+                                            if tier == 'premium' and 'origin-access-premier' in slug_val:
+                                                matched = True
+                                                break
+                                            if tier == 'standard' and 'origin-access-basic' in slug_val:
+                                                matched = True
+                                                break
+                                        if matched:
+                                            subscription_games.append(
+                                                SubscriptionGame(
+                                                    game_title=inc_product.get('name'),
+                                                    game_id=(inc_product.get('originOfferId') or '') + '@subscription'
+                                                )
+                                            )
+                                continue
+                            except (ValueError, KeyError, TypeError) as e:
+                                logger.exception("Can not parse collection product response: %s, error %s", coll_resp if 'coll_resp' in locals() else None, repr(e))
+                                raise UnknownBackendResponse()
+
+                        # non-collection products: prefer checking subscription slugs on availableInSubscription
+                        matched = False
+                        for avail in game_product.get('availableInSubscription') or []:
+                            slug_val = avail.get('slug', '')
+                            if isinstance(slug_val, list):
+                                slug = ','.join(str(s).lower() for s in slug_val)
+                            else:
+                                slug = str(slug_val).lower()
+
+                            # slug may contain multiple entries concatenated (or be a list),
+                            # so match by containment rather than exact equality.
+                            if tier == 'premium' and 'origin-access-premier' in slug:
+                                matched = True
+                                break
+                            if tier == 'standard' and 'origin-access-basic' in slug:
+                                matched = True
+                                break
+
+                        if matched:
                             subscription_games.append(
                                 SubscriptionGame(
-                                    game_title=game_product['name'],
-                                    game_id=game_product['originOfferId'] + '@subscription'
+                                    game_title=game_product.get('name'),
+                                    game_id=(game_product.get('originOfferId') or '') + '@subscription'
                                 )
                             )
                             break

@@ -47,7 +47,7 @@ class AuthenticatedHttpClient(HttpClient):
         self._access_token_expires_at = None
         self._refreshing_token = False  # Flag to prevent multiple saves during refresh
         self._static_headers = {
-            "User-Agent": "EAApp/PC/13.468.0.5981",
+            "User-Agent": "EAApp/PC/13.468.0.5981/GOG_Galaxy",
             "x-client-id": "EAX-JUNO-CLIENT"
         }
 
