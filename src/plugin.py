@@ -389,10 +389,10 @@ class EAPlugin(Plugin):
         return OfferId(game_id.split('@')[0])
 
     async def _get_offers(self, offer_ids: Iterable[OfferId]) -> Dict[OfferId, Json]:
-        """Retrieve offer data, checking cache first."""
-        offers = {}
-        missing_offers = []
-        
+        """Retrieve offer data, checking cache first. Fetch missing offers in batches of max 100."""
+        offers: Dict[OfferId, Json] = {}
+        missing_offers: List[OfferId] = []
+
         # Check cache first
         for offer_id in offer_ids:
             cached_offer = self._offer_id_cache.get(offer_id)
@@ -400,22 +400,34 @@ class EAPlugin(Plugin):
                 offers[offer_id] = cached_offer
             else:
                 missing_offers.append(offer_id)
-        
-        # Fetch missing offers
+
+        # Fetch missing offers in batches
         if missing_offers:
-            try:
-                gathered_offers = await self._backend_client.get_offers(missing_offers)
-                if isinstance(gathered_offers, dict):
-                    for key, offer in gathered_offers.items():
-                        if isinstance(offer, dict):
+            MAX_BATCH = 100
+            # Deduplicate while preserving order
+            seen = set()
+            unique_missing = []
+            for oid in missing_offers:
+                if oid not in seen:
+                    seen.add(oid)
+                    unique_missing.append(oid)
+
+            for start in range(0, len(unique_missing), MAX_BATCH):
+                chunk = unique_missing[start:start + MAX_BATCH]
+                try:
+                    gathered_offers = await self._backend_client.get_offers(chunk)
+                    if isinstance(gathered_offers, dict):
+                        for key, offer in gathered_offers.items():
+                            if not isinstance(offer, dict):
+                                continue
                             origin_offer_id = offer.get('offerId') or offer.get('originOfferId') or key
                             if origin_offer_id:
-                                offer_id = OfferId(origin_offer_id)
-                                offers[offer_id] = offer
-                                self._offer_id_cache[offer_id] = offer
-            except Exception as e:
-                logger.error(f"Failed to fetch offers batch: {e}")
-                
+                                oid = OfferId(origin_offer_id)
+                                offers[oid] = offer
+                                self._offer_id_cache[oid] = offer
+                except Exception as e:
+                    logger.error(f"Failed to fetch offers batch starting at {start}: {e}")
+
         return offers
 
     async def get_owned_games(self) -> List[Game]:

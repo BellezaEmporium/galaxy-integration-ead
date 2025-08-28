@@ -7,7 +7,7 @@ rmdir /S /Q "%PLUGIN_PATH%" 2>nul
 mkdir "%PLUGIN_PATH%"
 
 set "SCRIPT_DIR=%~dp0"
-set "zip_file=%SCRIPT_DIR%origin_v0.44.4.zip"
+set "zip_file=%SCRIPT_DIR%origin_v0.44.5.zip"
 
 if exist "%zip_file%" (
     echo Extracting %zip_file%
