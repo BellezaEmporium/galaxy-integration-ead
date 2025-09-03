@@ -8,8 +8,6 @@
 # Kudos to @imLinguin for the necessary info.
 ###
 
-import tempfile
-import os
 import platform
 import random
 import subprocess
@@ -64,8 +62,8 @@ class HardwareInfoCache:
         with self._lock:
             self._cache = None
             self._cache_time = None
-    
-    def get_hardware_info(self) -> Tuple[str, str, int, str, str, str, str, str]:
+
+    def get_hardware_info(self) -> Tuple[str, str, int, str, str, str, str, str, str]:
         """Get hardware information with caching and optimized methods"""
         current_time = time.time()
         
@@ -109,220 +107,36 @@ class HardwareInfoCache:
     
     def _gather_windows_info(self):
         """Get hardware information on Windows with CIM commands (PowerShell)"""
-        ps_script = '''
-        try {
-            $ErrorActionPreference = "SilentlyContinue"
-            
-            $bios = Get-CimInstance Win32_BIOS | Select-Object -First 1
-            $baseBoard = Get-CimInstance Win32_BaseBoard | Select-Object -First 1
-            $os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1
-            $videoControllers = Get-CimInstance Win32_VideoController | Where-Object { $_.PNPDeviceID -match "DEV_[0-9A-F]+" } | Select-Object -First 1
-            $diskDrive = Get-CimInstance Win32_DiskDrive | Select-Object -First 1
-            $networkAdapter = Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -eq $true -and $_.NetEnabled -eq $true -and $_.ServiceName -notmatch "vmnetadapter|vboxnetadp|ndisip|tap|hyperv|loopback" -and $_.MACAddress } | Select-Object -First 1
-            
-            $gid = 0
-            if ($videoControllers -and $videoControllers.PNPDeviceID) {
-                if ($videoControllers.PNPDeviceID -match "DEV_([0-9A-F]+)") {
-                    try {
-                        $gid = [Convert]::ToInt32($matches[1], 16)
-                    } catch {
-                        $gid = 0
-                    }
-                }
-            }
-
-            $mac = ""
-            if ($networkAdapter -and $networkAdapter.MACAddress) {
-                $macClean = $networkAdapter.MACAddress -replace "[:-]", ""
-                if ($macClean) {
-                    $mac = "`$" + $macClean.ToLower()
-                }
-            }
-            
-            $osiTimestamp = ""
-            if ($os -and $os.InstallDate) {
-                try {
-                    $epoch = Get-Date "1970-01-01"
-                    $osiTimestamp = [int64](($os.InstallDate - $epoch).TotalSeconds)
-                } catch {
-                    $osiTimestamp = ""
-                }
-            }
-            
-            $result = @{
-                bbm = if ($bios -and $bios.Manufacturer) { $bios.Manufacturer.ToString() } else { "" }
-                bsn = if ($bios -and $bios.SerialNumber) { $bios.SerialNumber.ToString() } else { "" }
-                gid = $gid
-                hsn = if ($diskDrive -and $diskDrive.SerialNumber) { $diskDrive.SerialNumber.ToString().Trim() } else { "" }
-                msn = if ($baseBoard -and $baseBoard.SerialNumber) { $baseBoard.SerialNumber.ToString() } else { "" }
-                mac = $mac
-                osn = if ($os -and $os.SerialNumber) { $os.SerialNumber.ToString() } else { "" }
-                osi = $osiTimestamp.ToString()
-            }
-            
-            $result | ConvertTo-Json -Compress
-        } catch {
-            $errorResult = @{
-                bbm = ""
-                bsn = ""
-                gid = 0
-                hsn = ""
-                msn = ""
-                mac = ""
-                osn = ""
-                osi = ""
-            }
-            $errorResult | ConvertTo-Json -Compress
-        }
-        '''
-        
         try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.ps1', delete=False, encoding='utf-8') as f:
-                f.write(ps_script)
-                script_path = f.name
-            
-            try:
-                result = subprocess.check_output(
-                    ['powershell', '-ExecutionPolicy', 'Bypass', '-File', script_path],
-                    stderr=subprocess.STDOUT,
-                    timeout=15,
-                    text=True,
-                    encoding='utf-8'
-                ).strip()
-            finally:
-                try:
-                    os.unlink(script_path)
-                except:
-                    pass
+            result = subprocess.check_output(
+                ['powershell', '-ExecutionPolicy', 'Bypass', '-File', 'pc_sign_ps.ps1'],
+                stderr=subprocess.STDOUT,
+                timeout=15,
+                text=True,
+                encoding='utf-8'
+            ).strip()
                     
             if result:
                 data = json.loads(result)
-                # Extract timestamp from Windows date string if present
-                osi_raw = data.get('osi', '')
-                osi_timestamp = self._extract_windows_timestamp(osi_raw)
                 return (
+                    data.get('mbm', ''),
                     data.get('bbm', ''),
-                    data.get('bsn', ''),
                     data.get('gid', 0),
+                    data.get('bsn', ''),
                     data.get('hsn', ''),
                     data.get('msn', ''),
                     data.get('mac', ''),
                     data.get('osn', ''),
-                    osi_timestamp
+                    data.get('osi', ''),
                 )
         except (json.JSONDecodeError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired, Exception) as e:
-            logger.warning(f"PowerShell optimized method failed: {e}, falling back to alternative method...")
-
-            # If previous method didn't work, fallback method using WMIC
-            return self._gather_windows_info_fallback()
-    
-    def _extract_windows_timestamp(self, date_str):
-        """Extract Unix timestamp from Windows date string"""
-        if not date_str:
-            return ""
-            
-        try:
-            # First try to parse as Unix timestamp (in seconds)
-            timestamp = int(date_str)
-            # Check if it's a reasonable timestamp (between 1990 and 2050)
-            if 631152000 <= timestamp <= 2524608000:
-                return str(timestamp)
-        except (ValueError, TypeError):
-            pass
-        
-        try:
-            # Try parsing as Windows WMI timestamp format (YYYYMMDDhhmmss.ffffff+UUU)
-            if len(date_str) >= 14:
-                dt_part = date_str[:14]
-                dt = datetime.datetime.strptime(dt_part, "%Y%m%d%H%M%S")
-                epoch = datetime.datetime(1970, 1, 1)
-                return str(int((dt - epoch).total_seconds()))
-        except (ValueError, TypeError):
-            pass
-        
-        try:
-            # Common Windows datetime formats
-            formats = [
-                "%m/%d/%Y %H:%M:%S",
-                "%d/%m/%Y %H:%M:%S", 
-                "%m/%d/%Y %I:%M:%S %p",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %I:%M:%S %p"
-            ]
-            
-            date_str = date_str.strip()
-            for fmt in formats:
-                try:
-                    dt = datetime.datetime.strptime(date_str, fmt)
-                    epoch = datetime.datetime(1970, 1, 1)
-                    return str(int((dt - epoch).total_seconds()))
-                except ValueError:
-                    continue
-        except Exception:
-            pass
-            
-        return ""
-    def _gather_windows_info_fallback(self):
-        """Fallback method for Windows using simpler WMI commands (CMD & PowerShell)"""
-        try:
-            # Get basic info with individual commands
-            bbm = self._run_cmd('wmic bios get Manufacturer /value').split('=')[-1].strip() if self._run_cmd('wmic bios get Manufacturer /value') else ""
-            bsn = self._run_cmd('wmic bios get SerialNumber /value').split('=')[-1].strip() if self._run_cmd('wmic bios get SerialNumber /value') else ""
-            
-            # Try to get GPU device ID
-            gid = 0
-            gpu_info = self._run_cmd('wmic path win32_videocontroller get PNPDeviceID /value')
-            if gpu_info and 'DEV_' in gpu_info:
-                import re
-                match = re.search(r'DEV_([0-9A-F]+)', gpu_info)
-                if match:
-                    gid = int(match.group(1), 16)
-            
-            # Get disk serial number
-            hsn = self._run_cmd('wmic diskdrive get SerialNumber /value').split('=')[-1].strip() if self._run_cmd('wmic diskdrive get SerialNumber /value') else ""
-            
-            # Get motherboard serial number
-            msn = self._run_cmd('wmic baseboard get SerialNumber /value').split('=')[-1].strip() if self._run_cmd('wmic baseboard get SerialNumber /value') else ""
-            
-            # Get MAC address
-            mac = ""
-            mac_info = self._run_cmd('wmic path Win32_NetworkAdapter where "PhysicalAdapter=True and NetEnabled=True" get MACAddress /value')
-            if mac_info:
-                for line in mac_info.split('\n'):
-                    if 'MACAddress=' in line and line.split('=')[1].strip():
-                        mac_addr = line.split('=')[1].strip()
-                        if mac_addr and len(mac_addr.replace(':', '')) == 12:
-                            mac = f"${mac_addr.replace(':', '').lower()}"
-                            break
-            
-            # Get OS serial number
-            osn = ""
-            try:
-                osn_string = self._run_cmd('wmic os get SerialNumber /value').split('=')[-1].strip() if self._run_cmd('wmic os get SerialNumber /value') else ""
-                if osn_string:
-                    osn = osn_string.replace('-', '').replace(' ', '').lower()
-            except Exception:
-                pass
-            
-            # Get OS install date
-            osi = ""
-            try:
-                install_date_str = self._run_cmd('wmic os get InstallDate /value').split('=')[-1].strip() if self._run_cmd('wmic os get InstallDate /value') else ""
-                if install_date_str:
-                    osi = install_date_str.split('.')[0] # Remove milliseconds
-            except Exception:
-                pass
-            
-            return (bbm, bsn, gid, hsn, msn, mac, osn, osi)
-            
-        except Exception as e:
-            logger.error(f"Windows fallback method failed: {e}, using default values")
-            # Return default values to prevent complete failure
-            return ("Unknown", "Unknown", 0, "Unknown", "Unknown", "", "Unknown", "")
+            logger.warning(f"PowerShell optimized method failed: {e}.")
+            return "", "", 0, "", "", "", "", "", ""
 
     def _gather_macos_info(self):
         """Get hardware information on macOS with improved error handling"""
         try:
+            mbm = self._run_cmd("system_profiler SPHardwareDataType | awk '/Model Name/ {print $NF}'")
             bsn = self._run_cmd("system_profiler SPHardwareDataType | awk '/Serial Number/ {print $NF}'")
             gid_str = self._run_cmd("system_profiler SPDisplaysDataType | awk '/Device ID:/ {print $NF}'")
             gid = int(gid_str, 16) if gid_str and gid_str.strip() else 0
@@ -347,43 +161,80 @@ class HardwareInfoCache:
                 hsn = "disk0"
             if not msn:
                 msn = "macOS-Unknown-UUID"
-                
-            return "", bsn, gid, hsn, msn, mac, "", "" 
+            return mbm, "", gid, bsn, hsn, msn, mac, "", ""
         except Exception as e:
             # In case of error, use default values
             logger.error(f"Error gathering macOS hardware info: {str(e)}")
-            return "", "macOS-Unknown", 0, "disk0", "macOS-Unknown-UUID", "", "", ""
+            return "", "macOS-Unknown", 0, "", "disk0", "macOS-Unknown-UUID", "", "", ""
 
 @dataclass
 class PCSign:
-    bbm: str = field(init=False)
-    bsn: str = field(init=False)
-    gid: int = field(init=False)
-    hsn: str = field(init=False)
-    msn: str = field(init=False)
-    mac: str = field(init=False)
-    mid: str = field(init=False)
-    osn: str = field(init=False)
-    osi: str = field(init=False)
-    ts: str = field(init=False)
-    av: str = "v1"
-    sv: PCSignVersion = PCSignVersion.V2
-    
+    """
+    PCSign represents a unique signature for a PC based on its hardware information.
+
+    Attributes:
+        av (str): Application version. Always set to "v1".
+        bsn (str): BIOS Serial Number.
+        gid (int): GPU device ID.
+        hsn (str): Disk Serial Number.
+        mac (str): MAC Address. May be None if not available.
+        mid (str): FNV-1a hash of hardware info, serving as a machine identifier.
+        msb (str): Motherboard Manufacturer.
+        msn (str): Motherboard Serial Number.
+        sv (PCSignVersion): Secret Key Version, determines the signing key used.
+        ts (str): Timestamp of signature generation.
+
+    Methods:
+        __post_init__(): Initializes hardware information and computes the machine ID and timestamp.
+        calculate_fnv1a_hash() -> str: Calculates the FNV-1a hash of hardware information.
+        preload_hardware_cache(): Preloads hardware information cache.
+        generate_fast(sv: PCSignVersion) -> str: Quickly generates a PC signature for a given version.
+        sign_key(): Returns the secret key corresponding to the current PCSignVersion.
+        to_dict(): Serializes the PCSign instance to a dictionary.
+        base64url_encode(data: bytes) -> str: Encodes bytes using URL-safe base64 encoding without padding.
+        generate_pc_sign() -> str: Generates the final PC signature as a base64url-encoded payload and signature.
+    """
+    bbm: str = field(init=False) # BIOS Baseboard Manufacturer
+    bsn: str = field(init=False) # BIOS Serial Number
+    gid: int = field(init=False) # GPU Device ID
+    hsn: str = field(init=False) # Hard Disk Serial Number
+    mbm: str = field(init=False) # Motherboard Manufacturer
+    msn: str = field(init=False) # Motherboard Serial Number
+    mac: str = field(init=False) # MAC Address
+    mid: str = field(init=False) # Machine ID
+    osn: str = field(init=False) # Operating System Serial Number
+    osi: str = field(init=False) # Operating System ID
+    ts: str = field(init=False) # Timestamp
+    av: str = "v1"                                          
+    sv: PCSignVersion = random.choice(list(PCSignVersion))
+
     def __post_init__(self):
         cache = HardwareInfoCache()
-        self.bbm, self.bsn, self.gid, self.hsn, self.msn, self.mac, self.osn, self.osi = cache.get_hardware_info()
+        self.mbm, self.bbm, self.gid, self.bsn, self.hsn, self.msn, self.mac, self.osn, self.osi = cache.get_hardware_info()
         self.mid = self.calculate_fnv1a_hash()
-        self.ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f")[:-3]
+        now = datetime.datetime.now(datetime.timezone.utc)
+        self.ts = f"{now.year}-{now.month}-{now.day} {now.hour}:{now.minute}:{now.second}:{int(now.microsecond/1000)}"
 
     def calculate_fnv1a_hash(self) -> str:
-        hardware_bytes = b''.join([str(item).encode('utf-8') for item in [self.bsn, self.gid, self.hsn, self.msn, self.mac, self.osn, self.osi]])
+        buffer = (
+            str(self.mbm)
+            + str(self.msn)
+            + str(self.bbm)
+            + str(self.bsn)
+            + str(self.osi)
+            + str(self.osn)
+        )
 
-        # FNV-1a hash calculation
+        if self.mac is not None:
+            buffer += str(self.mac)
+
+        # FNV-1a 64-bit hash
         offset = 0xcbf29ce484222325
         prime = 0x100000001b3
-        for b in hardware_bytes:
+        for b in buffer.encode("utf-8"):
             offset ^= b
             offset = (offset * prime) & 0xFFFFFFFFFFFFFFFF
+
         return str(offset)
 
     @staticmethod
@@ -412,9 +263,9 @@ class PCSign:
 
     def to_dict(self):
         d = {
-            "av": self.av, "bsn": self.bsn, "gid": self.gid,
-            "hsn": self.hsn, "mac": self.mac, "mid": self.mid, "msn": self.msn,
-            "sv": self.sv.value, "ts": self.ts
+            "av":self.av,"bsn":self.bsn,"gid":self.gid,
+            "hsn":self.hsn,"mac":self.mac,"mid":self.mid,"msn":self.msn,
+            "sv":self.sv.value,"ts":self.ts
         }
         return d
 
@@ -423,7 +274,7 @@ class PCSign:
         return base64.urlsafe_b64encode(data).rstrip(b'=').decode()
 
     def generate_pc_sign(self) -> str:
-        payload = self.base64url_encode(json.dumps(self.to_dict()).encode())
+        payload = self.base64url_encode(json.dumps(self.to_dict(), separators=(',', ':')).encode())
         signature = hmac.new(self.sign_key(), payload.encode(), hashlib.sha256).digest()
         return f"{payload}.{self.base64url_encode(signature)}"
 

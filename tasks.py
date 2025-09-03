@@ -5,7 +5,7 @@ import tempfile
 from shutil import rmtree, which
 from distutils.dir_util import copy_tree
 
-from invoke import task
+from invoke.tasks import task
 from galaxy.tools import zip_folder_to_file
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))

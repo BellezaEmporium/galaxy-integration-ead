@@ -4,6 +4,7 @@ import logging
 import pathlib
 import platform
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -11,12 +12,13 @@ import webbrowser
 from functools import partial
 from typing import Any, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable, Tuple, Callable
 from urllib.parse import urlparse, parse_qs
+import grpc
 
 from galaxy.api.consts import LicenseType, Platform
 from galaxy.api.errors import AuthenticationRequired, BackendError, UnknownBackendResponse, UnknownError
 from galaxy.api.plugin import create_and_run_plugin, Plugin
 from galaxy.api.types import (
-    Achievement, Authentication, UserInfo, Game, GameTime, LicenseInfo, LocalGame,
+    Achievement, Authentication, UserInfo, UserPresence, PresenceState, Game, GameTime, LicenseInfo, LocalGame,
     NextStep, Subscription, SubscriptionGame
 )
 
@@ -643,6 +645,478 @@ class EAPlugin(Plugin):
             UserInfo(user_id=str(user_id), user_name=str(user_name), avatar_url=str(avatar_url))
             for user_id, (user_name, avatar_url) in (await self._backend_client.get_friends()).items()
         ]
+    
+    async def update_user_presence(self, user_id: str, user_presence: UserPresence) -> None:
+        """Updates user presence via gRPC without .proto files"""
+        try:
+            access_token = getattr(self._http_client, "_access_token", None)
+            if not access_token:
+                logger.warning("No access token available for gRPC presence update.")
+                return
+
+            # EA Complete workflow: CreateSession -> ConnectSession -> SubscribeToPresence
+            success = await self._complete_presence_workflow(access_token, user_id, user_presence)
+            
+                # Fallback methods if the full workflow fails
+            if not success:
+                logger.info("Complete workflow failed, trying individual methods")
+                
+                # Method 1: Create a presence session
+                if not success:
+                    success = await self._create_presence_session(access_token, user_id, user_presence)
+                
+                # Method 2: Connect to an existing presence session
+                if not success:
+                    success = await self._connect_to_presence_session(access_token, user_id, user_presence)
+                
+                # Method 3: Native gRPC with fallback
+                if not success:
+                    success = await self._try_grpc_reflection_call(access_token, user_id, user_presence)
+            
+            if success:
+                logger.info(f"Successfully updated presence for user {user_id}")
+            else:
+                logger.warning(f"All gRPC methods failed for user {user_id}")
+                
+        except Exception as e:
+            logger.error(f"Failed to update presence via gRPC: {e}")
+
+    async def _complete_presence_workflow(self, access_token: str, user_id: str, user_presence: UserPresence) -> bool:
+        """Full EA workflow: CreateSession -> ConnectSession -> SubscribeToPresence"""
+        session_token = None
+        
+        try:
+            # Step 1: Create a presence session and retrieve the token
+            session_token = await self._create_presence_session_with_token(access_token, user_id, user_presence)
+            if not session_token:
+                logger.warning("Failed to create presence session")
+                return False
+            
+            # Step 2: Connect to the session with configuration (optional)
+            connected = await self._connect_to_presence_session(access_token, user_id, user_presence)
+            if not connected:
+                logger.warning("Failed to connect to presence session, continuing anyway")
+            
+            # Step 3: Subscribe to friends' presence to enable updates
+            subscribed = await self._subscribe_to_friends_presence(access_token, session_token)
+            if subscribed:
+                logger.info("Complete presence workflow successful")
+                return True
+            else:
+                logger.warning("Failed to subscribe to friends presence")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Complete presence workflow failed: {e}")
+            return False
+
+    async def _create_presence_session_with_token(self, access_token: str, user_id: str, user_presence: UserPresence) -> Optional[bytes]:
+        """Creates a presence session and returns the session token"""
+        try:
+            url = "https://api.k.social.ea.com/eadp.social.presence.v1.PresenceService/CreatePresenceSession"
+            headers = {
+                "user-agent": "ProtoHttp 2.0/DS 18.0.0 (Windows)",
+                "te": "trailers",
+                "content-type": "application/grpc+proto",
+                "authorization": f"Bearer {access_token}",
+                "grpc-accept-encoding": "gzip",
+                "grpc-timeout": "30s",
+                "x-call-sequence": "1"
+            }
+            
+            # Message simple pour CreatePresenceSession
+            presence_status = 1 if user_presence.presence_state == PresenceState.Online else 0
+            message = self._encode_minimal_presence_message(user_id, presence_status)
+            
+            # gRPC prefix (5 bytes: compression flag + message length)
+            grpc_prefix = struct.pack('>BI', 0, len(message))  # 0 = no compression
+            grpc_data = grpc_prefix + message
+            
+            response = await self._http_client.post(url, headers=headers, data=grpc_data)
+            
+            status_code = response.get('status') if isinstance(response, dict) else getattr(response, 'status_code', None)
+            
+            if status_code == 200:
+                content = response.get('content', b'') if isinstance(response, dict) else getattr(response, 'content', b'')
+                if content and len(content) > 5:
+                    # Extract the session token (skip the first 5 bytes of the gRPC prefix)
+                    session_data = content[5:] if len(content) > 5 else content
+                    logger.info(f"Session token received, length: {len(session_data)} bytes")
+                    return session_data
+                else:
+                    logger.warning("Empty session response")
+                    return None
+            else:
+                logger.warning(f"CreatePresenceSession failed: {status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"CreatePresenceSession with token failed: {e}")
+            return None
+
+    async def _subscribe_to_friends_presence(self, access_token: str, session_token: bytes) -> bool:
+        """Subscribe to friends' presence to enable presence updates"""
+        try:
+            url = "https://api.k.social.ea.com/eadp.social.presence.v1.PresenceService/SubscribeToFriendsPresence"
+            headers = {
+                "user-agent": "ProtoHttp 2.0/DS 18.0.0 (Windows)",
+                "te": "trailers",
+                "content-type": "application/grpc+proto",
+                "authorization": f"Bearer {access_token}",
+                "grpc-accept-encoding": "gzip",
+                "grpc-timeout": "30s",
+                "x-call-sequence": "1"
+            }
+            
+            # Use the session token as the message (binary data from CreatePresenceSession)
+            message = session_token
+            
+            # gRPC prefix (5 bytes: compression flag + message length)
+            grpc_prefix = struct.pack('>BI', 0, len(message))  # 0 = no compression
+            grpc_data = grpc_prefix + message
+            
+            response = await self._http_client.post(url, headers=headers, data=grpc_data)
+            
+            status_code = response.get('status') if isinstance(response, dict) else getattr(response, 'status_code', None)
+            
+            if status_code == 200:
+                logger.info("Successfully subscribed to friends presence")
+                
+                    # Parse the response (should be an empty protobuf message)
+                content = response.get('content', b'') if isinstance(response, dict) else getattr(response, 'content', b'')
+                if content:
+                    self._log_grpc_response_analysis(content, "SubscribeToFriendsPresence")
+                else:
+                    logger.info("Empty response as expected for SubscribeToFriendsPresence")
+                
+                return True
+            else:
+                content = response.get('content', b'') if isinstance(response, dict) else getattr(response, 'content', b'')
+                logger.warning(f"SubscribeToFriendsPresence failed: {status_code} - {str(content)[:200]}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"SubscribeToFriendsPresence failed: {e}")
+            return False
+
+    async def _create_presence_session(self, access_token: str, user_id: str, user_presence: UserPresence) -> bool:
+        """Creates a new presence session"""
+        return await self._try_grpc_http_call(
+            access_token, user_id, user_presence, 
+            "CreatePresenceSession"
+        )
+
+    async def _connect_to_presence_session(self, access_token: str, user_id: str, user_presence: UserPresence) -> bool:
+        """Connects to an existing presence session with EA configuration"""
+        return await self._try_grpc_http_call(
+            access_token, user_id, user_presence, 
+            "ConnectToPresenceSession"
+        )
+
+    async def _try_grpc_http_call(self, access_token: str, user_id: str, user_presence: UserPresence, method: str = "CreatePresenceSession") -> bool:
+        """Attempt gRPC call over HTTP/2 with appropriate headers"""
+        try:
+            url = f"https://api.k.social.ea.com/eadp.social.presence.v1.PresenceService/{method}"
+            headers = {
+                "user-agent": "ProtoHttp 2.0/DS 18.0.0 (Windows)",
+                "te": "trailers",
+                "content-type": "application/grpc+proto",
+                "authorization": f"Bearer {access_token}",
+                "grpc-accept-encoding": "gzip",
+                "grpc-timeout": "30s",
+                "x-call-sequence": "1"
+            }
+            
+            # Protobuf message with presence configuration based on the method
+            if method == "ConnectToPresenceSession":
+                message = self._encode_connect_presence_message(user_id, user_presence)
+            else:
+                # CreatePresenceSession - message simple
+                presence_status = 1 if user_presence.presence_state == PresenceState.Online else 0
+                message = self._encode_minimal_presence_message(user_id, presence_status)
+            
+            # gRPC prefix (5 bytes: compression flag + message length)
+            grpc_prefix = struct.pack('>BI', 0, len(message))  # 0 = no compression
+            grpc_data = grpc_prefix + message
+            
+            response = await self._http_client.post(url, headers=headers, data=grpc_data)
+            
+            # Le client HTTP peut retourner un dict au lieu d'un objet Response 
+            status_code = response.get('status') if isinstance(response, dict) else getattr(response, 'status_code', None)
+            logger.info(f"gRPC HTTP call ({method}) response: {status_code}")
+            
+            if status_code == 200:
+                logger.info(f"Presence update successful via HTTP gRPC call ({method})")
+                
+                # Parse the response for debugging
+                content = response.get('content', b'') if isinstance(response, dict) else getattr(response, 'content', b'')
+                if content:
+                    self._log_grpc_response_analysis(content, method)
+                
+                return True
+            else:
+                content = response.get('content', b'') if isinstance(response, dict) else getattr(response, 'content', b'')
+                logger.warning(f"gRPC HTTP call ({method}) failed: {status_code} - {str(content)[:200]}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"HTTP gRPC call ({method}) failed: {e}")
+            return False
+
+    async def _try_grpc_reflection_call(self, access_token: str, user_id: str, user_presence: UserPresence) -> bool:
+        """Attempt to use gRPC reflection to discover the API"""
+        try:
+            # Essai d'import optionnel des modules gRPC reflection
+            try:
+                from grpc_reflection.v1alpha import reflection_pb2
+                from grpc_reflection.v1alpha import reflection_pb2_grpc
+                logger.info("gRPC reflection modules imported successfully")
+            except ImportError:
+                logger.info("grpcio-reflection not available, trying basic gRPC call")
+                return await self._try_basic_grpc_call(access_token, user_id, user_presence)
+                
+            # Si les modules sont disponibles, essayer la reflection
+            credentials = grpc.ssl_channel_credentials()
+            channel = grpc.aio.secure_channel('api.k.social.ea.com:443', credentials)
+            
+            try:
+                return await self._try_basic_grpc_call_with_channel(channel, access_token, user_id, user_presence)
+            finally:
+                try:
+                    await channel.close()
+                except:
+                    pass
+                
+        except Exception as e:
+            logger.error(f"gRPC reflection setup failed: {e}")
+            return False
+    
+    async def _try_basic_grpc_call(self, access_token: str, user_id: str, user_presence: UserPresence) -> bool:
+        """Basic gRPC call without reflection"""
+        try:
+            credentials = grpc.ssl_channel_credentials()
+            channel = grpc.aio.secure_channel('api.k.social.ea.com:443', credentials)
+            
+            try:
+                return await self._try_basic_grpc_call_with_channel(channel, access_token, user_id, user_presence)
+            finally:
+                try:
+                    await channel.close()
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"Basic gRPC call failed: {e}")
+            return False
+
+    async def _try_basic_grpc_call_with_channel(self, channel, access_token: str, user_id: str, user_presence: UserPresence) -> bool:
+        """gRPC call using a provided channel"""
+        try:
+            # Create a generic gRPC unary_unary call for raw bytes
+            call = channel.unary_unary(
+                '/eadp.social.presence.v1.PresenceService/CreatePresenceSession'
+            )
+            
+            # Message with authorization metadata
+            metadata = [
+                ('authorization', f'Bearer {access_token}'),
+                ('user-agent', 'ProtoHttp 2.0/DS 18.0.0 (Windows)')
+            ]
+            
+            presence_status = 1 if user_presence.presence_state == PresenceState.Online else 0
+            message = self._encode_minimal_presence_message(user_id, presence_status)
+            
+            response = await call(message, metadata=metadata)
+            
+            # Parse the response for debugging
+            if response:
+                self._log_grpc_response_analysis(response, "basic_call")
+            
+            logger.info(f"Basic gRPC call successful, response length: {len(response) if response else 0}")
+            return True
+        except Exception as e:
+            logger.error(f"Basic gRPC call with channel failed: {e}")
+            return False
+
+    def _encode_minimal_presence_message(self, user_id: str, status: int) -> bytes:
+        """Encode a minimal protobuf message for presence"""
+        try:
+            # Very basic manual protobuf encoding
+            # Field 1 (user_id as string): tag 1, wire type 2 (length-delimited)
+            user_id_bytes = user_id.encode('utf-8')
+            user_id_field = b'\x0a' + self._encode_varint(len(user_id_bytes)) + user_id_bytes
+            
+            # Field 2 (status as varint): tag 2, wire type 0 (varint)
+            status_field = b'\x10' + self._encode_varint(status)
+            
+            return user_id_field + status_field
+        except Exception as e:
+            logger.error(f"Failed to encode presence message: {e}")
+            return b''
+
+    def _encode_connect_presence_message(self, user_id: str, user_presence: UserPresence) -> bytes:
+        """Encode a protobuf message for ConnectToPresenceSession with EA configuration"""
+        try:
+            # Field 1: user_id (string)
+            user_id_bytes = user_id.encode('utf-8')
+            user_id_field = b'\x0a' + self._encode_varint(len(user_id_bytes)) + user_id_bytes
+            
+            # Field 2: Presence configuration (embedded message)
+            config_fields = b''
+            
+            # Sub-field 1: ea_app.presenceAvailability (sint32)
+            # Convert Galaxy presence state to EA: Online=1, Away=0, Offline=-1
+            if user_presence.presence_state == PresenceState.Online:
+                availability = 1
+            elif user_presence.presence_state == PresenceState.Away:
+                availability = 0
+            else:  # Offline ou Unknown
+                availability = -1
+            
+            # Encoder sint32 (zigzag encoding puis varint)
+            availability_zigzag = (availability << 1) ^ (availability >> 31)
+            avail_field = b'\x0a' + self._encode_string_field("ea_app.presenceAvailability") + b'\x12' + b'\x18' + self._encode_varint(availability_zigzag)
+            
+            # Sub-field 2: ea_app.presenceIsInvisible (sint32)
+            # Invisible if the game is present but we want to be discreet
+            invisible = 0  # Default visible
+            if hasattr(user_presence, 'game_id') and user_presence.game_id and user_presence.presence_state != PresenceState.Online:
+                invisible = 1
+            
+            invisible_zigzag = (invisible << 1) ^ (invisible >> 31)
+            invisible_field = b'\x0a' + self._encode_string_field("ea_app.presenceIsInvisible") + b'\x12' + b'\x18' + self._encode_varint(invisible_zigzag)
+            
+            config_fields = avail_field + invisible_field
+            
+            # Field 2: Configuration (embedded message)
+            config_field = b'\x12' + self._encode_varint(len(config_fields)) + config_fields
+            
+            return user_id_field + config_field
+            
+        except Exception as e:
+            logger.error(f"Failed to encode connect presence message: {e}")
+            # Fallback vers message simple
+            return self._encode_minimal_presence_message(user_id, 1 if user_presence.presence_state == PresenceState.Online else 0)
+
+    def _encode_string_field(self, value: str) -> bytes:
+        """Encode a protobuf string field (without tag)"""
+        value_bytes = value.encode('utf-8')
+        return self._encode_varint(len(value_bytes)) + value_bytes
+
+    def _encode_varint(self, value: int) -> bytes:
+        """Encode an integer in protobuf varint format"""
+        result = b''
+        while value >= 0x80:
+            result += bytes([(value & 0x7f) | 0x80])
+            value >>= 7
+        result += bytes([value & 0x7f])
+        return result
+
+    def _decode_protobuf_response(self, data: bytes) -> Dict[str, Any]:
+        """Decode a protobuf response for analysis (useful for debugging)"""
+        try:
+            if isinstance(data, str):
+                # If it's a hex string, convert to bytes
+                data = bytes.fromhex(data)
+
+            # Ensure we have bytes
+            if not isinstance(data, bytes):
+                data = bytes(data)
+                
+            fields = {}
+            offset = 0
+            
+            while offset < len(data):
+                if offset >= len(data):
+                    break
+                    
+                # Lire le tag (field number + wire type)
+                tag = int(data[offset])
+                field_number = tag >> 3
+                wire_type = tag & 0x07
+                offset += 1
+                
+                if wire_type == 0:  # varint
+                    value = 0
+                    shift = 0
+                    while offset < len(data):
+                        byte = int(data[offset])
+                        offset += 1
+                        value |= (byte & 0x7f) << shift
+                        if not (byte & 0x80):
+                            break
+                        shift += 7
+                    fields[f'field_{field_number}'] = {'type': 'varint', 'value': value}
+                    
+                elif wire_type == 2:  # length-delimited (string/bytes)
+                    length = 0
+                    shift = 0
+                    while offset < len(data):
+                        byte = int(data[offset])
+                        offset += 1
+                        length |= (byte & 0x7f) << shift
+                        if not (byte & 0x80):
+                            break
+                        shift += 7
+                    
+                    if offset + length <= len(data):
+                        value_bytes = bytes(data[offset:offset + length])
+                        offset += length
+                        try:
+                            # Try to decode as UTF-8
+                            decoded = value_bytes.decode('utf-8')
+                            fields[f'field_{field_number}'] = {'type': 'string', 'value': decoded}
+                        except UnicodeDecodeError:
+                            fields[f'field_{field_number}'] = {'type': 'bytes', 'value': value_bytes.hex()}
+                    else:
+                        break
+                else:
+                    # Unsupported types
+                    fields[f'field_{field_number}'] = {'type': f'wire_type_{wire_type}', 'value': 'unsupported'}
+                    break
+            
+            return {'success': True, 'fields': fields}
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _log_grpc_response_analysis(self, response_data: bytes, method: str):
+        """Log the analysis of a gRPC response for debugging"""
+        try:
+            analysis = self._decode_protobuf_response(response_data)
+            if analysis.get('success'):
+                logger.info(f"gRPC {method} response analysis: {analysis['fields']}")
+            else:
+                logger.warning(f"Failed to analyze gRPC {method} response: {analysis.get('error')}")
+        except Exception as e:
+            logger.error(f"Error analyzing gRPC {method} response: {e}")
+
+    async def _call_presence_service(self, channel, access_token: str, user_id: str, user_presence: UserPresence):
+        """Direct call to the presence service via gRPC"""
+        try:
+            # Create a generic gRPC call
+            call = channel.unary_unary(
+                '/eadp.social.presence.v1.PresenceService/CreatePresenceSession',
+                request_serializer=lambda x: x,
+                response_deserializer=lambda x: x
+            )
+            
+            # Message with authorization metadata
+            metadata = [
+                ('authorization', f'Bearer {access_token}'),
+                ('user-agent', 'ProtoHttp 2.0/DS 18.0.0 (Windows)')
+            ]
+            
+            # Encoded message
+            presence_status = 1 if user_presence.presence_state == PresenceState.Online else 0
+            message = self._encode_minimal_presence_message(user_id, presence_status)
+            
+            response = await call(message, metadata=metadata)
+            logger.info(f"Direct gRPC call successful, response length: {len(response)}")
+            
+        except Exception as e:
+            logger.error(f"Direct gRPC call failed: {e}")
+
+        return super().update_user_presence(user_id, user_presence)
 
     def _open_uri(self, uri):
         logger.info(f"Opening {uri}")
