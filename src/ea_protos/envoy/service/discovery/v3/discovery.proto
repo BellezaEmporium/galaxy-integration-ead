@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package envoy.service.discovery.v3;
+
+import "envoy/config/core/v3/base.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/rpc/status.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3;discoveryv3";
+option java_multiple_files = true;
+option java_outer_classname = "DiscoveryProto";
+option java_package = "io.envoyproxy.envoy.service.discovery.v3";
+
+message ResourceLocator {
+    string name = 1;
+    map<string, string> dynamic_parameters = 2;
+}
+
+message ResourceName {
+    string name = 1;
+    DynamicParameterConstraints dynamic_parameter_constraints = 2;
+}
+
+message DiscoveryRequest {
+    string version_info = 1;
+    config.core.v3.Node node = 2;
+    repeated string resource_names = 3;
+    repeated ResourceLocator resource_locators = 7;
+    string type_url = 4;
+    string response_nonce = 5;
+    google.rpc.Status error_detail = 6;
+}
+
+message DiscoveryResponse {
+    string version_info = 1;
+    repeated google.protobuf.Any resources = 2;
+    bool canary = 3;
+    string type_url = 4;
+    string nonce = 5;
+    config.core.v3.ControlPlane control_plane = 6;
+}
+
+message DeltaDiscoveryRequest {
+    config.core.v3.Node node = 1;
+    string type_url = 2;
+    repeated string resource_names_subscribe = 3;
+    repeated string resource_names_unsubscribe = 4;
+    repeated ResourceLocator resource_locators_subscribe = 8;
+    repeated ResourceLocator resource_locators_unsubscribe = 9;
+    map<string, string> initial_resource_versions = 5;
+    string response_nonce = 6;
+    google.rpc.Status error_detail = 7;
+}
+
+message DeltaDiscoveryResponse {
+    string system_version_info = 1;
+    repeated Resource resources = 2;
+    string type_url = 4;
+    repeated string removed_resources = 6;
+    repeated ResourceName removed_resource_names = 8;
+    string nonce = 5;
+    config.core.v3.ControlPlane control_plane = 7;
+}
+
+message DynamicParameterConstraints {
+    oneof type {
+        SingleConstraint constraint = 1;
+        ConstraintList or_constraints = 2;
+        ConstraintList and_constraints = 3;
+        DynamicParameterConstraints not_constraints = 4;
+    }
+    
+    message SingleConstraint {
+        string key = 1;
+        
+        oneof constraint_type {
+            string value = 2;
+            Exists exists = 3;
+        }
+        
+        message Exists {
+            
+        }
+    }
+    
+    message ConstraintList {
+        repeated DynamicParameterConstraints constraints = 1;
+    }
+}
+
+message Resource {
+    string name = 3;
+    ResourceName resource_name = 8;
+    repeated string aliases = 4;
+    string version = 1;
+    google.protobuf.Any resource = 2;
+    google.protobuf.Duration ttl = 6;
+    
+    CacheControl cache_control = 7;
+    message CacheControl {
+        bool do_not_cache = 1;
+    }
+    
+    config.core.v3.Metadata metadata = 9;
+}

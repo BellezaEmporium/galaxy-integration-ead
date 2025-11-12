@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package envoy.extensions.filters.common.fault.v3;
+
+import "envoy/type/v3/percent.proto";
+import "google/protobuf/duration.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/common/fault/v3;faultv3";
+option java_multiple_files = true;
+option java_outer_classname = "FaultProto";
+option java_package = "io.envoyproxy.envoy.extensions.filters.common.fault.v3";
+
+message FaultDelay {
+    type.v3.FractionalPercent percentage = 4;
+    
+    oneof fault_delay_secifier {
+        google.protobuf.Duration fixed_delay = 3;
+        HeaderDelay header_delay = 5;
+    }
+    
+    reserved 2, 1, "type";
+    
+    message HeaderDelay {
+        
+    }
+    
+    enum FaultDelayType {
+        FIXED = 0;
+    }
+}
+
+message FaultRateLimit {
+    type.v3.FractionalPercent percentage = 2;
+    
+    oneof limit_type {
+        FixedLimit fixed_limit = 1;
+        HeaderLimit header_limit = 3;
+    }
+    
+    message FixedLimit {
+        uint64 limit_kbps = 1;
+    }
+    
+    message HeaderLimit {
+        
+    }
+}

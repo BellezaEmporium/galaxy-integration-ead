@@ -1,0 +1,236 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/backoff.proto";
+import "envoy/config/core/v3/http_uri.proto";
+import "envoy/type/v3/percent.proto";
+import "envoy/type/v3/semantic_version.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
+import "xds/core/v3/context_params.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/migrate.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/core/v3;corev3";
+option java_multiple_files = true;
+option java_outer_classname = "BaseProto";
+option java_package = "io.envoyproxy.envoy.config.core.v3";
+
+message Locality {
+    string region = 1;
+    string zone = 2;
+    string sub_zone = 3;
+}
+
+message BuildVersion {
+    type.v3.SemanticVersion version = 1;
+    google.protobuf.Struct metadata = 2;
+}
+
+message Extension {
+    string name = 1;
+    string category = 2;
+    string type_descriptor = 3 [deprecated = true];
+    BuildVersion version = 4;
+    bool disabled = 5;
+    repeated string type_urls = 6;
+}
+
+message Node {
+    string id = 1;
+    string cluster = 2;
+    google.protobuf.Struct metadata = 3;
+    map<string, xds.core.v3.ContextParams> dynamic_parameters = 12;
+    Locality locality = 4;
+    string user_agent_name = 6;
+    repeated Extension extensions = 9;
+    repeated string client_features = 10;
+    repeated Address listening_addresses = 11 [deprecated = true];
+    
+    oneof user_agent_version_type {
+        string user_agent_version = 7;
+        BuildVersion user_agent_build_version = 8;
+    }
+    
+    reserved 5, "build_version";
+}
+
+message Metadata {
+    map<string, google.protobuf.Struct> filter_metadata = 1;
+    map<string, google.protobuf.Any> typed_filter_metadata = 2;
+}
+
+message RuntimeUInt32 {
+    uint32 default_value = 2;
+    string runtime_key = 3;
+}
+
+message RuntimePercent {
+    type.v3.Percent default_value = 1;
+    string runtime_key = 2;
+}
+
+message RuntimeDouble {
+    double default_value = 1;
+    string runtime_key = 2;
+}
+
+message RuntimeFeatureFlag {
+    google.protobuf.BoolValue default_value = 1;
+    string runtime_key = 2;
+}
+
+message KeyValue {
+    string key = 1;
+    bytes value = 2;
+}
+
+message KeyValueAppend {
+    KeyValue entry = 1;
+    
+    KeyValueAppendAction action = 2;
+    enum KeyValueAppendAction {
+        APPEND_IF_EXISTS_OR_ADD = 0;
+        ADD_IF_ABSENT = 1;
+        OVERWRITE_IF_EXISTS_OR_ADD = 2;
+        OVERWRITE_IF_EXISTS = 3;
+    }
+}
+
+message KeyValueMutation {
+    KeyValueAppend append = 1;
+    string remove = 2;
+}
+
+message QueryParameter {
+    string key = 1;
+    string value = 2;
+}
+
+message HeaderValue {
+    string key = 1;
+    string value = 2;
+    bytes raw_value = 3;
+}
+
+message HeaderValueOption {
+    HeaderValue header = 1;
+    google.protobuf.BoolValue append = 2 [deprecated = true];
+    
+    HeaderAppendAction append_action = 3;
+    enum HeaderAppendAction {
+        APPEND_IF_EXISTS_OR_ADD = 0;
+        ADD_IF_ABSENT = 1;
+        OVERWRITE_IF_EXISTS_OR_ADD = 2;
+        OVERWRITE_IF_EXISTS = 3;
+    }
+    
+    bool keep_empty_value = 4;
+}
+
+message HeaderMap {
+    repeated HeaderValue headers = 1;
+}
+
+message WatchedDirectory {
+    string path = 1;
+}
+
+message DataSource {
+    WatchedDirectory watched_directory = 5;
+    
+    oneof specifier {
+        string filename = 1;
+        bytes inline_bytes = 2;
+        string inline_string = 3;
+        string environment_variable = 4;
+    }
+}
+
+message RetryPolicy {
+    BackoffStrategy retry_back_off = 1;
+    google.protobuf.UInt32Value num_retries = 2;
+    string retry_on = 3;
+    
+    RetryPriority retry_priority = 4;
+    message RetryPriority {
+        string name = 1;
+        
+        oneof config_type {
+            google.protobuf.Any typed_config = 2;
+        }
+    }
+    
+    repeated RetryHostPredicate retry_host_predicate = 5;
+    message RetryHostPredicate {
+        string name = 1;
+        
+        oneof config_type {
+            google.protobuf.Any typed_config = 2;
+        }
+    }
+    
+    int64 host_selection_retry_max_attempts = 6;
+}
+
+message RemoteDataSource {
+    HttpUri http_uri = 1;
+    string sha256 = 2;
+    RetryPolicy retry_policy = 3;
+}
+
+message AsyncDataSource {
+    oneof specifier {
+        DataSource local = 1;
+        RemoteDataSource remote = 2;
+    }
+}
+
+message TransportSocket {
+    string name = 1;
+    
+    oneof config_type {
+        google.protobuf.Any typed_config = 3;
+    }
+    
+    reserved 2, "config";
+}
+
+message RuntimeFractionalPercent {
+    type.v3.FractionalPercent default_value = 1;
+    string runtime_key = 2;
+}
+
+message ControlPlane {
+    string identifier = 1;
+}
+
+enum RoutingPriority {
+    DEFAULT = 0;
+    HIGH = 1;
+}
+
+enum RequestMethod {
+    METHOD_UNSPECIFIED = 0;
+    GET = 1;
+    HEAD = 2;
+    POST = 3;
+    PUT = 4;
+    DELETE = 5;
+    CONNECT = 6;
+    OPTIONS = 7;
+    TRACE = 8;
+    PATCH = 9;
+}
+
+enum TrafficDirection {
+    UNSPECIFIED = 0;
+    INBOUND = 1;
+    OUTBOUND = 2;
+}

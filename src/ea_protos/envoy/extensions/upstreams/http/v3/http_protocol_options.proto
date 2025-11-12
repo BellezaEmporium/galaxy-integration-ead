@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package envoy.extensions.upstreams.http.v3;
+
+import "envoy/config/core/v3/extension.proto";
+import "envoy/config/core/v3/protocol.proto";
+import "envoy/extensions/filters/network/http_connection_manager/v3/http_connection_manager.proto";
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3;httpv3";
+option java_multiple_files = true;
+option java_outer_classname = "HttpProtocolOptionsProto";
+option java_package = "io.envoyproxy.envoy.extensions.upstreams.http.v3";
+
+message HttpProtocolOptions {
+    config.core.v3.HttpProtocolOptions common_http_protocol_options = 1;
+    config.core.v3.UpstreamHttpProtocolOptions upstream_http_protocol_options = 2;
+    repeated filters.network.http_connection_manager.v3.HttpFilter http_filters = 6;
+    config.core.v3.TypedExtensionConfig header_validation_config = 7;
+    
+    oneof upstream_protocol_options {
+        ExplicitHttpConfig explicit_http_config = 3;
+        UseDownstreamHttpConfig use_downstream_protocol_config = 4;
+        AutoHttpConfig auto_config = 5;
+    }
+    
+    message ExplicitHttpConfig {
+        oneof protocol_config {
+            config.core.v3.Http1ProtocolOptions http_protocol_options = 1;
+            config.core.v3.Http2ProtocolOptions http2_protocol_options = 2;
+            config.core.v3.Http3ProtocolOptions http3_protocol_options = 3;
+        }
+    }
+    
+    message UseDownstreamHttpConfig {
+        config.core.v3.Http1ProtocolOptions http_protocol_options = 1;
+        config.core.v3.Http2ProtocolOptions http2_protocol_options = 2;
+        config.core.v3.Http3ProtocolOptions http3_protocol_options = 3;
+    }
+    
+    message AutoHttpConfig {
+        config.core.v3.Http1ProtocolOptions http_protocol_options = 1;
+        config.core.v3.Http2ProtocolOptions http2_protocol_options = 2;
+        config.core.v3.Http3ProtocolOptions http3_protocol_options = 3;
+        config.core.v3.AlternateProtocolsCacheOptions alternate_protocols_cache_options = 4;
+    }
+}

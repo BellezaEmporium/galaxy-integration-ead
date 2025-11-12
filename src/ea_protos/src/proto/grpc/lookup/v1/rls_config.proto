@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package grpc.lookup.v1;
+
+import "google/protobuf/duration.proto";
+
+option go_package = "google.golang.org/grpc/lookup/grpc_lookup_v1";
+option java_multiple_files = true;
+option java_outer_classname = "RlsConfigProto";
+option java_package = "io.grpc.lookup.v1";
+
+message NameMatcher {
+    string key = 1;
+    repeated string names = 2;
+    bool required_match = 3;
+}
+
+message GrpcKeyBuilder {
+    repeated Name names = 1;
+    message Name {
+        string service = 1;
+        string method = 2;
+    }
+    
+    ExtraKeys extra_keys = 3;
+    message ExtraKeys {
+        string host = 1;
+        string service = 2;
+        string method = 3;
+    }
+    
+    repeated NameMatcher headers = 2;
+    map<string, string> constant_keys = 4;
+}
+
+message HttpKeyBuilder {
+    repeated string host_patterns = 1;
+    repeated string path_patterns = 2;
+    repeated NameMatcher query_parameters = 3;
+    repeated NameMatcher headers = 4;
+    map<string, string> constant_keys = 5;
+}
+
+message RouteLookupConfig {
+    repeated HttpKeyBuilder http_keybuilders = 1;
+    repeated GrpcKeyBuilder grpc_keybuilders = 2;
+    string lookup_service = 3;
+    google.protobuf.Duration lookup_service_timeout = 4;
+    google.protobuf.Duration max_age = 5;
+    google.protobuf.Duration stale_age = 6;
+    int64 cache_size_bytes = 7;
+    repeated string valid_targets = 8;
+    string default_target = 9;
+    
+    reserved 10, "request_processing_strategy";
+}
+
+message RouteLookupClusterSpecifier {
+    RouteLookupConfig route_lookup_config = 1;
+}

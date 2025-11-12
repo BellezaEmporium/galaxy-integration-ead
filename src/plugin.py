@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import pathlib
 import platform
 import re
@@ -13,6 +12,15 @@ from functools import partial
 from typing import Any, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable, Tuple, Callable
 from urllib.parse import urlparse, parse_qs
 import grpc
+import logging
+
+logger = logging.getLogger(__name__)
+
+logger.setLevel(logging.INFO)
+
+# Constants
+LOCAL_GAMES_CACHE_VALID_PERIOD = 5 * 60  # 5 minutes
+IS_WINDOWS = platform.system().lower() == "windows"
 
 from galaxy.api.consts import LicenseType, Platform
 from galaxy.api.errors import AuthenticationRequired, BackendError, UnknownBackendResponse, UnknownError
@@ -35,12 +43,6 @@ from lgames_manifests import (
 from uri_scheme_handler import is_uri_handler_installed
 from version import __version__
 from pcsign_hash import preload_pc_sign_cache, generate_pc_sign_fast, extract_user_info_from_jwt
-
-logger = logging.getLogger(__name__)
-
-# Constants
-LOCAL_GAMES_CACHE_VALID_PERIOD = 5 * 60  # 5 minutes
-IS_WINDOWS = platform.system().lower() == "windows"
 
 # JavaScript injection for login page
 LOGIN_JS = {
@@ -205,6 +207,88 @@ class EAPlugin(Plugin):
         self._http_client.set_cookies_updated_callback(self._update_stored_cookies)
         self._http_client.set_save_lats_callback(self._save_lats)
         self._http_client.set_save_tokens_callback(self._store_tokens)
+        # Presence callback: register plugin handler to update friends presence in Galaxy client
+        try:
+            # register a sync wrapper that schedules the async handler
+            def _presence_wrapper(msg):
+                asyncio.create_task(self._on_presence_message(msg))
+            self._http_client.set_presence_callback(_presence_wrapper)
+        except Exception:
+            logger.exception("Failed to set presence callback on http_client")
+
+        # Try to auto-register protobuf parsers if pb2 were generated
+        try:
+            # Import generated pb2 modules, if present
+            try:
+                import importlib
+                server_mod = None
+                try:
+                    server_mod = importlib.import_module('ea_protos.Server_pb2')
+                except Exception:
+                    try:
+                        server_mod = importlib.import_module('Server_pb2')
+                        logger.debug('Found generated Server_pb2 at top-level')
+                    except Exception:
+                        server_mod = None
+
+                if server_mod:
+                    if hasattr(server_mod, 'StreamMessage'):
+                        self._http_client.register_protobuf_message(server_mod.StreamMessage)
+                    if hasattr(server_mod, 'BinaryMessage'):
+                        self._http_client.register_protobuf_message(server_mod.BinaryMessage)
+                    logger.info("Registered pb2 parsers for StreamMessage/BinaryMessage")
+                else:
+                    logger.debug("No generated Server_pb2 found or registration failed")
+            except Exception as e:
+                logger.debug(f"No generated Server_pb2 found or registration failed: {e}")
+            # Also try to auto-register any message types that contain 'presence' keyword
+            try:
+                import pkgutil, importlib
+                # Try the ea_protos package
+                try:
+                    import ea_protos as epkg
+                    pkg_iter = pkgutil.iter_modules(epkg.__path__)
+                except Exception:
+                    pkg_iter = ()
+                for finder, modname, ispkg in pkg_iter:
+                    try:
+                        mod = importlib.import_module(f"ea_protos.{modname}")
+                    except Exception:
+                        continue
+                    for attr_name in dir(mod):
+                        attr = getattr(mod, attr_name)
+                        if hasattr(attr, 'DESCRIPTOR'):
+                            try:
+                                desc_name = getattr(attr.DESCRIPTOR, 'name', '') or ''
+                                if 'presence' in desc_name.lower() or 'presence' in attr_name.lower():
+                                    self._http_client.register_protobuf_message(attr)
+                                    logger.info(f"Registered protobuf parser for {desc_name} ({modname}.{attr_name})")
+                            except Exception:
+                                continue
+            except Exception:
+                logger.debug("Auto-registration of presence-containing pb2 messages failed")
+            # Also try to import top-level generated pb2 modules such as Server_pb2 or Messages_pb2
+            try:
+                import importlib
+                for candidate in ('Server_pb2', 'Messages_pb2'):
+                    try:
+                        mod = importlib.import_module(candidate)
+                    except Exception:
+                        continue
+                    for attr_name in dir(mod):
+                        attr = getattr(mod, attr_name)
+                        if hasattr(attr, 'DESCRIPTOR'):
+                            try:
+                                desc_name = getattr(attr.DESCRIPTOR, 'name', '') or ''
+                                if 'presence' in desc_name.lower() or 'presence' in attr_name.lower():
+                                    self._http_client.register_protobuf_message(attr)
+                                    logger.info(f"Registered protobuf parser for {desc_name} ({candidate}.{attr_name})")
+                            except Exception:
+                                continue
+            except Exception:
+                logger.debug('Top-level pb2 auto-registration failed')
+        except Exception:
+            logger.exception("Failed to register generated protobuf parsers")
         
         self._backend_client = EABackendClient(self._http_client)
         
@@ -789,6 +873,11 @@ class EAPlugin(Plugin):
                 else:
                     logger.info("Empty response as expected for SubscribeToFriendsPresence")
                 
+                # Start a background coroutine to receive the presence stream and feed messages to http client
+                try:
+                    asyncio.create_task(self._start_presence_stream(access_token, session_token))
+                except Exception:
+                    logger.exception("Failed to start presence stream task")
                 return True
             else:
                 content = response.get('content', b'') if isinstance(response, dict) else getattr(response, 'content', b'')
@@ -1117,6 +1206,110 @@ class EAPlugin(Plugin):
             logger.error(f"Direct gRPC call failed: {e}")
 
         return super().update_user_presence(user_id, user_presence)
+
+    async def _start_presence_stream(self, access_token: str, session_token: bytes):
+        """Open a streaming gRPC connection to SubscribeEvent and forward messages to http_client.handle_presence_message
+        This will run as a background task and reconnect on errors.
+        """
+        try:
+            credentials = grpc.ssl_channel_credentials()
+            channel = grpc.aio.secure_channel('api.k.social.ea.com:443', credentials)
+
+            # Build StreamMessage with BinaryMessage wrapping session token (field 1 is length-delim)
+            def _encode_binary_message(bytes_val: bytes) -> bytes:
+                # field 1 (messageData) tag 0x0A
+                return b'\x0a' + self._encode_varint(len(bytes_val)) + bytes_val
+
+            def _encode_stream_message(inner_bytes: bytes) -> bytes:
+                bin_msg = _encode_binary_message(inner_bytes)
+                # StreamMessage field 1 (streamData) tag 0x0A
+                return b'\x0a' + self._encode_varint(len(bin_msg)) + bin_msg
+
+            message = session_token if session_token else b''
+            stream_message = _encode_stream_message(message)
+
+            # unary_stream for SubscribeEvent (unary request, stream response)
+            def _identity_serializer(x: bytes) -> bytes:
+                if isinstance(x, (bytes, bytearray)):
+                    return bytes(x)
+                raise TypeError("Request must be bytes")
+
+            call = channel.unary_stream(
+                '/eax.services.ipc.GrpcServer/SubscribeEvent',
+                request_serializer=_identity_serializer,
+                response_deserializer=lambda x: x
+            )
+            metadata = [
+                ('authorization', f'Bearer {access_token}'),
+                ('user-agent', 'ProtoHttp 2.0/DS 18.0.0 (Windows)')
+            ]
+
+            try:
+                # call returns an async iterator for responses
+                async for resp_bytes in call(stream_message, metadata=metadata):
+                    try:
+                        # resp_bytes is the raw protobuf StreamMessage; parse nested BinaryMessage -> messageData
+                        # Use the plugin's helper to decode basic protobuf wire format
+                        analysis = self._decode_protobuf_response(resp_bytes)
+                        fields = analysis.get('fields') if analysis.get('success') else {}
+                        # field_1 should contain the streamData as 'bytes' (hex), or 'string'
+                        stream_data = fields.get('field_1') if fields else None
+                        if not stream_data:
+                            continue
+                        # If bytes hex, convert
+                        if stream_data.get('type') == 'bytes':
+                            inner = bytes.fromhex(stream_data.get('value'))
+                        else:
+                            # string; attempt to interpret as hex
+                            val = stream_data.get('value')
+                            try:
+                                inner = bytes.fromhex(val)
+                            except Exception:
+                                inner = val.encode('utf-8')
+
+                        # Now inner is BinaryMessage bytes: decode field_1 messageData
+                        inner_decoded = self._decode_protobuf_response(inner)
+                        inner_fields = inner_decoded.get('fields') if inner_decoded and inner_decoded.get('success') else {}
+                        message_field = inner_fields.get('field_1') if inner_fields else None
+                        if not message_field:
+                            continue
+                        if message_field.get('type') == 'bytes':
+                            payload_bytes = bytes.fromhex(message_field.get('value'))
+                        else:
+                            try:
+                                payload_bytes = bytes.fromhex(message_field.get('value'))
+                            except Exception:
+                                payload_bytes = message_field.get('value').encode('utf-8')
+
+                        # Finally pass the payload to http_client for parsing and callback flow
+                        await self._http_client.handle_presence_message(payload_bytes)
+                    except Exception:
+                        logger.exception("Error processing incoming presence stream message")
+            except Exception as e:
+                logger.warning(f"Presence stream ended or failed: {e}")
+            finally:
+                try:
+                    await channel.close()
+                except Exception:
+                    pass
+
+        except Exception:
+            logger.exception("Failed to start presence stream connection")
+
+    async def _on_presence_message(self, presence):
+        """Callback for incoming parsed presence messages. Convert to Galaxy UserPresence and update the friend presence."""
+        try:
+            # Convert presence model to Galaxy UserPresence
+            from src.presence import presence_to_user_presence
+            user_presence = presence_to_user_presence(presence)
+
+            # Update friend presence in the Galaxy client
+            try:
+                _ = self.update_user_presence(presence.account_id, user_presence)
+            except Exception:
+                logger.exception("Failed to update friend presence via plugin API")
+        except Exception:
+            logger.exception("Error in _on_presence_message callback")
 
     def _open_uri(self, uri):
         logger.info(f"Opening {uri}")

@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+import "envoy/config/core/v3/base.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
+import "udpa/annotations/sensitive.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/core/v3;corev3";
+option java_multiple_files = true;
+option java_outer_classname = "GrpcServiceProto";
+option java_package = "io.envoyproxy.envoy.config.core.v3";
+
+message GrpcService {
+    google.protobuf.Duration timeout = 3;
+    repeated HeaderValue initial_metadata = 5;
+    RetryPolicy retry_policy = 6;
+    
+    oneof target_specifier {
+        EnvoyGrpc envoy_grpc = 1;
+        GoogleGrpc google_grpc = 2;
+    }
+    
+    reserved 4;
+    
+    message EnvoyGrpc {
+        string cluster_name = 1;
+        string authority = 2;
+        RetryPolicy retry_policy = 3;
+        google.protobuf.UInt32Value max_receive_message_length = 4;
+        bool skip_envoy_headers = 5;
+    }
+    
+    message GoogleGrpc {
+        string target_uri = 1;
+        
+        ChannelCredentials channel_credentials = 2;
+        message ChannelCredentials {
+            oneof credential_specifier {
+                SslCredentials ssl_credentials = 1;
+                google.protobuf.Empty google_default = 2;
+                GoogleLocalCredentials local_credentials = 3;
+            }
+        }
+        
+        repeated CallCredentials call_credentials = 3;
+        message CallCredentials {
+            oneof credential_specifier {
+                string access_token = 1;
+                google.protobuf.Empty google_compute_engine = 2;
+                string google_refresh_token = 3;
+                ServiceAccountJWTAccessCredentials service_account_jwt_access = 4;
+                GoogleIAMCredentials google_iam = 5;
+                MetadataCredentialsFromPlugin from_plugin = 6;
+                StsService sts_service = 7;
+            }
+            
+            message ServiceAccountJWTAccessCredentials {
+                string json_key = 1;
+                uint64 token_lifetime_seconds = 2;
+            }
+            
+            message GoogleIAMCredentials {
+                string authorization_token = 1;
+                string authority_selector = 2;
+            }
+            
+            message MetadataCredentialsFromPlugin {
+                string name = 1;
+                
+                oneof config_type {
+                    google.protobuf.Any typed_config = 3;
+                }
+                
+                reserved 2, "config";
+            }
+            
+            message StsService {
+                string token_exchange_service_uri = 1;
+                string resource = 2;
+                string audience = 3;
+                string scope = 4;
+                string requested_token_type = 5;
+                string subject_token_path = 6;
+                string subject_token_type = 7;
+                string actor_token_path = 8;
+                string actor_token_type = 9;
+            }
+        }
+        
+        string stat_prefix = 4;
+        string credentials_factory_name = 5;
+        google.protobuf.Struct config = 6;
+        google.protobuf.UInt32Value per_stream_buffer_limit_bytes = 7;
+        
+        ChannelArgs channel_args = 8;
+        message ChannelArgs {
+            map<string, Value> args = 1;
+            
+            message Value {
+                oneof value_specifier {
+                    string string_value = 1;
+                    int64 int_value = 2;
+                }
+            }
+        }
+        
+        message SslCredentials {
+            DataSource root_certs = 1;
+            DataSource private_key = 2;
+            DataSource cert_chain = 3;
+        }
+        
+        message GoogleLocalCredentials {
+            
+        }
+    }
+}

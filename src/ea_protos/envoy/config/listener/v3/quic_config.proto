@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package envoy.config.listener.v3;
+
+import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/extension.proto";
+import "envoy/config/core/v3/protocol.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+import "xds/annotations/v3/status.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3;listenerv3";
+option java_multiple_files = true;
+option java_outer_classname = "QuicConfigProto";
+option java_package = "io.envoyproxy.envoy.config.listener.v3";
+
+message QuicProtocolOptions {
+    core.v3.QuicProtocolOptions quic_protocol_options = 1;
+    google.protobuf.Duration idle_timeout = 2;
+    google.protobuf.Duration crypto_handshake_timeout = 3;
+    core.v3.RuntimeFeatureFlag enabled = 4;
+    google.protobuf.UInt32Value packets_to_read_to_connection_count_ratio = 5;
+    core.v3.TypedExtensionConfig crypto_stream_config = 6;
+    core.v3.TypedExtensionConfig proof_source_config = 7;
+    core.v3.TypedExtensionConfig connection_id_generator_config = 8;
+    core.v3.TypedExtensionConfig server_preferred_address_config = 9;
+    google.protobuf.BoolValue send_disable_active_migration = 10;
+    core.v3.TypedExtensionConfig connection_debug_visitor_config = 11;
+}

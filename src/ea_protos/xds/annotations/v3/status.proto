@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package xds.annotations.v3;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/cncf/xds/go/xds/annotations/v3";
+
+message FileStatusAnnotation {
+    bool work_in_progress = 1;
+}
+
+message MessageStatusAnnotation {
+    bool work_in_progress = 1;
+}
+
+message FieldStatusAnnotation {
+    bool work_in_progress = 1;
+}
+
+message StatusAnnotation {
+    bool work_in_progress = 1;
+    PackageVersionStatus package_version_status = 2;
+}
+
+enum PackageVersionStatus {
+    UNKNOWN = 0;
+    FROZEN = 1;
+    ACTIVE = 2;
+    NEXT_MAJOR_VERSION_CANDIDATE = 3;
+}
+
+extend google.protobuf.FileOptions {
+    FileStatusAnnotation file_status = 226829418;
+}
+
+extend google.protobuf.MessageOptions {
+    MessageStatusAnnotation message_status = 226829418;
+}
+
+extend google.protobuf.FieldOptions {
+    FieldStatusAnnotation field_status = 226829418;
+}

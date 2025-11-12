@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package envoy.extensions.transport_sockets.tls.v3;
+
+import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/extension.proto";
+import "envoy/type/matcher/v3/string.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/wrappers.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/migrate.proto";
+import "udpa/annotations/sensitive.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3;tlsv3";
+option java_multiple_files = true;
+option java_outer_classname = "CommonProto";
+option java_package = "io.envoyproxy.envoy.extensions.transport_sockets.tls.v3";
+
+message TlsParameters {
+    TlsProtocol tls_minimum_protocol_version = 1;
+    enum TlsProtocol {
+        TLS_AUTO = 0;
+        TLSv1_0 = 1;
+        TLSv1_1 = 2;
+        TLSv1_2 = 3;
+        TLSv1_3 = 4;
+    }
+    
+    TlsProtocol tls_maximum_protocol_version = 2;
+    repeated string cipher_suites = 3;
+    repeated string ecdh_curves = 4;
+    repeated string signature_algorithms = 5;
+}
+
+message PrivateKeyProvider {
+    string provider_name = 1;
+    bool fallback = 4;
+    
+    oneof config_type {
+        google.protobuf.Any typed_config = 3;
+    }
+    
+    reserved 2, "config";
+}
+
+message TlsCertificate {
+    config.core.v3.DataSource certificate_chain = 1;
+    config.core.v3.DataSource private_key = 2;
+    config.core.v3.DataSource pkcs12 = 8;
+    config.core.v3.WatchedDirectory watched_directory = 7;
+    PrivateKeyProvider private_key_provider = 6;
+    config.core.v3.DataSource password = 3;
+    config.core.v3.DataSource ocsp_staple = 4;
+    repeated config.core.v3.DataSource signed_certificate_timestamp = 5;
+}
+
+message TlsSessionTicketKeys {
+    repeated config.core.v3.DataSource keys = 1;
+}
+
+message CertificateProviderPluginInstance {
+    string instance_name = 1;
+    string certificate_name = 2;
+}
+
+message SubjectAltNameMatcher {
+    SanType san_type = 1;
+    enum SanType {
+        SAN_TYPE_UNSPECIFIED = 0;
+        EMAIL = 1;
+        DNS = 2;
+        URI = 3;
+        IP_ADDRESS = 4;
+        OTHER_NAME = 5;
+    }
+    
+    type.matcher.v3.StringMatcher matcher = 2;
+    string oid = 3;
+}
+
+message CertificateValidationContext {
+    config.core.v3.DataSource trusted_ca = 1;
+    CertificateProviderPluginInstance ca_certificate_provider_instance = 13;
+    
+    SystemRootCerts system_root_certs = 17;
+    message SystemRootCerts {
+        
+    }
+    
+    config.core.v3.WatchedDirectory watched_directory = 11;
+    repeated string verify_certificate_spki = 3;
+    repeated string verify_certificate_hash = 2;
+    repeated SubjectAltNameMatcher match_typed_subject_alt_names = 15;
+    repeated type.matcher.v3.StringMatcher match_subject_alt_names = 9 [deprecated = true];
+    google.protobuf.BoolValue require_signed_certificate_timestamp = 6;
+    config.core.v3.DataSource crl = 7;
+    bool allow_expired_certificate = 8;
+    
+    TrustChainVerification trust_chain_verification = 10;
+    enum TrustChainVerification {
+        VERIFY_TRUST_CHAIN = 0;
+        ACCEPT_UNTRUSTED = 1;
+    }
+    
+    config.core.v3.TypedExtensionConfig custom_validator_config = 12;
+    bool only_verify_leaf_cert_crl = 14;
+    google.protobuf.UInt32Value max_verify_depth = 16;
+    
+    reserved 4, 5, "verify_subject_alt_name";
+}

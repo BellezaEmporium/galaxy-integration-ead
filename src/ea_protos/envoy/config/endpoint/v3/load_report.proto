@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package envoy.config.endpoint.v3;
+
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/base.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "xds/annotations/v3/status.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3;endpointv3";
+option java_multiple_files = true;
+option java_outer_classname = "LoadReportProto";
+option java_package = "io.envoyproxy.envoy.config.endpoint.v3";
+
+message UpstreamLocalityStats {
+    core.v3.Locality locality = 1;
+    uint64 total_successful_requests = 2;
+    uint64 total_requests_in_progress = 3;
+    uint64 total_error_requests = 4;
+    uint64 total_issued_requests = 8;
+    uint64 total_active_connections = 9;
+    uint64 total_new_connections = 10;
+    uint64 total_fail_connections = 11;
+    UnnamedEndpointLoadMetricStats cpu_utilization = 12;
+    UnnamedEndpointLoadMetricStats mem_utilization = 13;
+    UnnamedEndpointLoadMetricStats application_utilization = 14;
+    repeated EndpointLoadMetricStats load_metric_stats = 5;
+    repeated UpstreamEndpointStats upstream_endpoint_stats = 7;
+    uint32 priority = 6;
+}
+
+message UpstreamEndpointStats {
+    core.v3.Address address = 1;
+    google.protobuf.Struct metadata = 6;
+    uint64 total_successful_requests = 2;
+    uint64 total_requests_in_progress = 3;
+    uint64 total_error_requests = 4;
+    uint64 total_issued_requests = 7;
+    repeated EndpointLoadMetricStats load_metric_stats = 5;
+}
+
+message EndpointLoadMetricStats {
+    string metric_name = 1;
+    uint64 num_requests_finished_with_metric = 2;
+    double total_metric_value = 3;
+}
+
+message UnnamedEndpointLoadMetricStats {
+    uint64 num_requests_finished_with_metric = 1;
+    double total_metric_value = 2;
+}
+
+message ClusterStats {
+    string cluster_name = 1;
+    string cluster_service_name = 6;
+    repeated UpstreamLocalityStats upstream_locality_stats = 2;
+    uint64 total_dropped_requests = 3;
+    
+    repeated DroppedRequests dropped_requests = 5;
+    message DroppedRequests {
+        string category = 1;
+        uint64 dropped_count = 2;
+    }
+    
+    google.protobuf.Duration load_report_interval = 4;
+}

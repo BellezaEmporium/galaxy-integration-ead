@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package google.api.expr.v1alpha1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option cc_enable_arenas = true;
+option go_package = "google.golang.org/genproto/googleapis/api/expr/v1alpha1;expr";
+option java_multiple_files = true;
+option java_outer_classname = "SyntaxProto";
+option java_package = "com.google.api.expr.v1alpha1";
+
+message ParsedExpr {
+    Expr expr = 2;
+    SourceInfo source_info = 3;
+}
+
+message Expr {
+    int64 id = 2;
+    
+    oneof expr_kind {
+        Constant const_expr = 3;
+        Ident ident_expr = 4;
+        Select select_expr = 5;
+        Call call_expr = 6;
+        CreateList list_expr = 7;
+        CreateStruct struct_expr = 8;
+        Comprehension comprehension_expr = 9;
+    }
+    
+    message Ident {
+        string name = 1;
+    }
+    
+    message Select {
+        Expr operand = 1;
+        string field = 2;
+        bool test_only = 3;
+    }
+    
+    message Call {
+        Expr target = 1;
+        string function = 2;
+        repeated Expr args = 3;
+    }
+    
+    message CreateList {
+        repeated Expr elements = 1;
+    }
+    
+    message CreateStruct {
+        string message_name = 1;
+        
+        repeated Entry entries = 2;
+        message Entry {
+            int64 id = 1;
+            Expr value = 4;
+            
+            oneof key_kind {
+                string field_key = 2;
+                Expr map_key = 3;
+            }
+        }
+    }
+    
+    message Comprehension {
+        string iter_var = 1;
+        Expr iter_range = 2;
+        string accu_var = 3;
+        Expr accu_init = 4;
+        Expr loop_condition = 5;
+        Expr loop_step = 6;
+        Expr result = 7;
+    }
+}
+
+message Constant {
+    oneof constant_kind {
+        protobuf.NullValue null_value = 1;
+        bool bool_value = 2;
+        int64 int64_value = 3;
+        uint64 uint64_value = 4;
+        double double_value = 5;
+        string string_value = 6;
+        bytes bytes_value = 7;
+        protobuf.Duration duration_value = 8 [deprecated = true];
+        protobuf.Timestamp timestamp_value = 9 [deprecated = true];
+    }
+}
+
+message SourceInfo {
+    string syntax_version = 1;
+    string location = 2;
+    repeated int32 line_offsets = 3;
+    map<int64, int32> positions = 4;
+    map<int64, Expr> macro_calls = 5;
+}
+
+message SourcePosition {
+    string location = 1;
+    int32 offset = 2;
+    int32 line = 3;
+    int32 column = 4;
+}

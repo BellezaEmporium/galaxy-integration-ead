@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package envoy.type.http.v3;
+
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/type/http/v3;httpv3";
+option java_multiple_files = true;
+option java_outer_classname = "PathTransformationProto";
+option java_package = "io.envoyproxy.envoy.type.http.v3";
+
+message PathTransformation {
+    repeated Operation operations = 1;
+    message Operation {
+        oneof operation_specifier {
+            NormalizePathRFC3986 normalize_path_rfc_3986 = 2;
+            MergeSlashes merge_slashes = 3;
+        }
+        
+        message NormalizePathRFC3986 {
+            
+        }
+        
+        message MergeSlashes {
+            
+        }
+    }
+}

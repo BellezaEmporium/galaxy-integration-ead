@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package envoy.config.listener.v3;
+
+import "google/protobuf/any.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3;listenerv3";
+option java_multiple_files = true;
+option java_outer_classname = "ApiListenerProto";
+option java_package = "io.envoyproxy.envoy.config.listener.v3";
+
+message ApiListener {
+    google.protobuf.Any api_listener = 1;
+}

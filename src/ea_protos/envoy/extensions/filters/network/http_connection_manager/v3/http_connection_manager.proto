@@ -1,0 +1,281 @@
+syntax = "proto3";
+
+package envoy.extensions.filters.network.http_connection_manager.v3;
+
+import "envoy/config/accesslog/v3/accesslog.proto";
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/config_source.proto";
+import "envoy/config/core/v3/extension.proto";
+import "envoy/config/core/v3/protocol.proto";
+import "envoy/config/core/v3/substitution_format_string.proto";
+import "envoy/config/route/v3/route.proto";
+import "envoy/config/route/v3/scoped_route.proto";
+import "envoy/config/trace/v3/http_tracer.proto";
+import "envoy/type/http/v3/path_transformation.proto";
+import "envoy/type/tracing/v3/custom_tag.proto";
+import "envoy/type/v3/percent.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/migrate.proto";
+import "udpa/annotations/security.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3;http_connection_managerv3";
+option java_multiple_files = true;
+option java_outer_classname = "HttpConnectionManagerProto";
+option java_package = "io.envoyproxy.envoy.extensions.filters.network.http_connection_manager.v3";
+
+message HttpConnectionManager {
+    CodecType codec_type = 1;
+    enum CodecType {
+        AUTO = 0;
+        HTTP1 = 1;
+        HTTP2 = 2;
+        HTTP3 = 3;
+    }
+    
+    string stat_prefix = 2;
+    repeated HttpFilter http_filters = 5;
+    google.protobuf.BoolValue add_user_agent = 6;
+    
+    Tracing tracing = 7;
+    message Tracing {
+        type.v3.Percent client_sampling = 3;
+        type.v3.Percent random_sampling = 4;
+        type.v3.Percent overall_sampling = 5;
+        bool verbose = 6;
+        google.protobuf.UInt32Value max_path_tag_length = 7;
+        repeated type.tracing.v3.CustomTag custom_tags = 8;
+        config.trace.v3.Tracing.Http provider = 9;
+        google.protobuf.BoolValue spawn_upstream_span = 10;
+        
+        reserved 1, 2, "operation_name", "request_headers_for_tags";
+        
+        enum OperationName {
+            INGRESS = 0;
+            EGRESS = 1;
+        }
+    }
+    
+    config.core.v3.HttpProtocolOptions common_http_protocol_options = 35;
+    config.core.v3.Http1ProtocolOptions http_protocol_options = 8;
+    config.core.v3.Http2ProtocolOptions http2_protocol_options = 9;
+    config.core.v3.Http3ProtocolOptions http3_protocol_options = 44;
+    string server_name = 10;
+    
+    ServerHeaderTransformation server_header_transformation = 34;
+    enum ServerHeaderTransformation {
+        OVERWRITE = 0;
+        APPEND_IF_ABSENT = 1;
+        PASS_THROUGH = 2;
+    }
+    
+    config.core.v3.SchemeHeaderTransformation scheme_header_transformation = 48;
+    google.protobuf.UInt32Value max_request_headers_kb = 29;
+    google.protobuf.Duration stream_idle_timeout = 24;
+    google.protobuf.Duration request_timeout = 28;
+    google.protobuf.Duration request_headers_timeout = 41;
+    google.protobuf.Duration drain_timeout = 12;
+    google.protobuf.Duration delayed_close_timeout = 26;
+    repeated config.accesslog.v3.AccessLog access_log = 13;
+    google.protobuf.Duration access_log_flush_interval = 54 [deprecated = true];
+    bool flush_access_log_on_new_request = 55 [deprecated = true];
+    
+    HcmAccessLogOptions access_log_options = 56;
+    message HcmAccessLogOptions {
+        google.protobuf.Duration access_log_flush_interval = 1;
+        bool flush_access_log_on_new_request = 2;
+        bool flush_log_on_tunnel_successfully_established = 3;
+    }
+    
+    google.protobuf.BoolValue use_remote_address = 14;
+    uint32 xff_num_trusted_hops = 19;
+    repeated config.core.v3.TypedExtensionConfig original_ip_detection_extensions = 46;
+    repeated config.core.v3.TypedExtensionConfig early_header_mutation_extensions = 52;
+    
+    InternalAddressConfig internal_address_config = 25;
+    message InternalAddressConfig {
+        bool unix_sockets = 1;
+        repeated config.core.v3.CidrRange cidr_ranges = 2;
+    }
+    
+    bool skip_xff_append = 21;
+    string via = 22;
+    google.protobuf.BoolValue generate_request_id = 15;
+    bool preserve_external_request_id = 32;
+    bool always_set_request_id_in_response = 37;
+    
+    ForwardClientCertDetails forward_client_cert_details = 16;
+    enum ForwardClientCertDetails {
+        SANITIZE = 0;
+        FORWARD_ONLY = 1;
+        APPEND_FORWARD = 2;
+        SANITIZE_SET = 3;
+        ALWAYS_FORWARD_ONLY = 4;
+    }
+    
+    SetCurrentClientCertDetails set_current_client_cert_details = 17;
+    message SetCurrentClientCertDetails {
+        google.protobuf.BoolValue subject = 1;
+        bool cert = 3;
+        bool chain = 6;
+        bool dns = 4;
+        bool uri = 5;
+        
+        reserved 2;
+    }
+    
+    bool proxy_100_continue = 18;
+    bool represent_ipv4_remote_address_as_ipv4_mapped_ipv6 = 20;
+    
+    repeated UpgradeConfig upgrade_configs = 23;
+    message UpgradeConfig {
+        string upgrade_type = 1;
+        repeated HttpFilter filters = 2;
+        google.protobuf.BoolValue enabled = 3;
+    }
+    
+    google.protobuf.BoolValue normalize_path = 30;
+    bool merge_slashes = 33;
+    
+    PathWithEscapedSlashesAction path_with_escaped_slashes_action = 45;
+    enum PathWithEscapedSlashesAction {
+        IMPLEMENTATION_SPECIFIC_DEFAULT = 0;
+        KEEP_UNCHANGED = 1;
+        REJECT_REQUEST = 2;
+        UNESCAPE_AND_REDIRECT = 3;
+        UNESCAPE_AND_FORWARD = 4;
+    }
+    
+    RequestIDExtension request_id_extension = 36;
+    LocalReplyConfig local_reply_config = 38;
+    bool strip_matching_host_port = 39;
+    google.protobuf.BoolValue stream_error_on_invalid_http_message = 40;
+    
+    PathNormalizationOptions path_normalization_options = 43;
+    message PathNormalizationOptions {
+        type.http.v3.PathTransformation forwarding_transformation = 1;
+        type.http.v3.PathTransformation http_filter_transformation = 2;
+    }
+    
+    bool strip_trailing_host_dot = 47;
+    
+    ProxyStatusConfig proxy_status_config = 49;
+    message ProxyStatusConfig {
+        bool remove_details = 1;
+        bool remove_connection_termination_details = 2;
+        bool remove_response_flags = 3;
+        bool set_recommended_response_code = 4;
+        
+        oneof proxy_name {
+            bool use_node_id = 5;
+            string literal_proxy_name = 6;
+        }
+    }
+    
+    config.core.v3.TypedExtensionConfig typed_header_validation_config = 50;
+    bool append_x_forwarded_port = 51;
+    bool append_local_overload = 57;
+    google.protobuf.BoolValue add_proxy_protocol_connection_state = 53;
+    
+    oneof route_specifier {
+        Rds rds = 3;
+        config.route.v3.RouteConfiguration route_config = 4;
+        ScopedRoutes scoped_routes = 31;
+    }
+    
+    oneof strip_port_mode {
+        bool strip_any_host_port = 42;
+    }
+    
+    reserved 27, 11, "idle_timeout";
+}
+
+message LocalReplyConfig {
+    repeated ResponseMapper mappers = 1;
+    config.core.v3.SubstitutionFormatString body_format = 2;
+}
+
+message ResponseMapper {
+    config.accesslog.v3.AccessLogFilter filter = 1;
+    google.protobuf.UInt32Value status_code = 2;
+    config.core.v3.DataSource body = 3;
+    config.core.v3.SubstitutionFormatString body_format_override = 4;
+    repeated config.core.v3.HeaderValueOption headers_to_add = 5;
+}
+
+message Rds {
+    config.core.v3.ConfigSource config_source = 1;
+    string route_config_name = 2;
+}
+
+message ScopedRouteConfigurationsList {
+    repeated config.route.v3.ScopedRouteConfiguration scoped_route_configurations = 1;
+}
+
+message ScopedRoutes {
+    string name = 1;
+    
+    ScopeKeyBuilder scope_key_builder = 2;
+    message ScopeKeyBuilder {
+        repeated FragmentBuilder fragments = 1;
+        message FragmentBuilder {
+            oneof type {
+                HeaderValueExtractor header_value_extractor = 1;
+            }
+            
+            message HeaderValueExtractor {
+                string name = 1;
+                string element_separator = 2;
+                
+                oneof extract_type {
+                    uint32 index = 3;
+                    KvElement element = 4;
+                }
+                
+                message KvElement {
+                    string separator = 1;
+                    string key = 2;
+                }
+            }
+        }
+    }
+    
+    config.core.v3.ConfigSource rds_config_source = 3;
+    
+    oneof config_specifier {
+        ScopedRouteConfigurationsList scoped_route_configurations_list = 4;
+        ScopedRds scoped_rds = 5;
+    }
+}
+
+message ScopedRds {
+    config.core.v3.ConfigSource scoped_rds_config_source = 1;
+    string srds_resources_locator = 2;
+}
+
+message HttpFilter {
+    string name = 1;
+    bool is_optional = 6;
+    bool disabled = 7;
+    
+    oneof config_type {
+        google.protobuf.Any typed_config = 4;
+        config.core.v3.ExtensionConfigSource config_discovery = 5;
+    }
+    
+    reserved 3, 2, "config";
+}
+
+message RequestIDExtension {
+    google.protobuf.Any typed_config = 1;
+}
+
+message EnvoyMobileHttpConnectionManager {
+    HttpConnectionManager config = 1;
+}

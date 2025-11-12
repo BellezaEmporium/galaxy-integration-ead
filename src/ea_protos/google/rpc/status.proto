@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package google.rpc;
+
+import "google/protobuf/any.proto";
+
+option objc_class_prefix = "RPC";
+option cc_enable_arenas = true;
+option go_package = "google.golang.org/genproto/googleapis/rpc/status;status";
+option java_multiple_files = true;
+option java_outer_classname = "StatusProto";
+option java_package = "com.google.rpc";
+
+message Status {
+    int32 code = 1;
+    string message = 2;
+    repeated protobuf.Any details = 3;
+}

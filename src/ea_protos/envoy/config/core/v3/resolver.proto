@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+import "envoy/config/core/v3/address.proto";
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/core/v3;corev3";
+option java_multiple_files = true;
+option java_outer_classname = "ResolverProto";
+option java_package = "io.envoyproxy.envoy.config.core.v3";
+
+message DnsResolverOptions {
+    bool use_tcp_for_dns_lookups = 1;
+    bool no_default_search_domain = 2;
+}
+
+message DnsResolutionConfig {
+    repeated Address resolvers = 1;
+    DnsResolverOptions dns_resolver_options = 2;
+}

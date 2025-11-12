@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package envoy.data.accesslog.v3;
+
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/base.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/data/accesslog/v3;accesslogv3";
+option java_multiple_files = true;
+option java_outer_classname = "AccesslogProto";
+option java_package = "io.envoyproxy.envoy.data.accesslog.v3";
+
+message TCPAccessLogEntry {
+    AccessLogCommon common_properties = 1;
+    ConnectionProperties connection_properties = 2;
+}
+
+message HTTPAccessLogEntry {
+    AccessLogCommon common_properties = 1;
+    
+    HTTPVersion protocol_version = 2;
+    enum HTTPVersion {
+        PROTOCOL_UNSPECIFIED = 0;
+        HTTP10 = 1;
+        HTTP11 = 2;
+        HTTP2 = 3;
+        HTTP3 = 4;
+    }
+    
+    HTTPRequestProperties request = 3;
+    HTTPResponseProperties response = 4;
+}
+
+message ConnectionProperties {
+    uint64 received_bytes = 1;
+    uint64 sent_bytes = 2;
+}
+
+message AccessLogCommon {
+    double sample_rate = 1;
+    config.core.v3.Address downstream_remote_address = 2;
+    config.core.v3.Address downstream_local_address = 3;
+    TLSProperties tls_properties = 4;
+    google.protobuf.Timestamp start_time = 5;
+    google.protobuf.Duration time_to_last_rx_byte = 6;
+    google.protobuf.Duration time_to_first_upstream_tx_byte = 7;
+    google.protobuf.Duration time_to_last_upstream_tx_byte = 8;
+    google.protobuf.Duration time_to_first_upstream_rx_byte = 9;
+    google.protobuf.Duration time_to_last_upstream_rx_byte = 10;
+    google.protobuf.Duration time_to_first_downstream_tx_byte = 11;
+    google.protobuf.Duration time_to_last_downstream_tx_byte = 12;
+    config.core.v3.Address upstream_remote_address = 13;
+    config.core.v3.Address upstream_local_address = 14;
+    string upstream_cluster = 15;
+    ResponseFlags response_flags = 16;
+    config.core.v3.Metadata metadata = 17;
+    string upstream_transport_failure_reason = 18;
+    string route_name = 19;
+    config.core.v3.Address downstream_direct_remote_address = 20;
+    map<string, google.protobuf.Any> filter_state_objects = 21;
+    map<string, string> custom_tags = 22;
+    google.protobuf.Duration duration = 23;
+    uint32 upstream_request_attempt_count = 24;
+    string connection_termination_details = 25;
+    string stream_id = 26;
+    bool intermediate_log_entry = 27 [deprecated = true];
+    string downstream_transport_failure_reason = 28;
+    uint64 downstream_wire_bytes_sent = 29;
+    uint64 downstream_wire_bytes_received = 30;
+    uint64 upstream_wire_bytes_sent = 31;
+    uint64 upstream_wire_bytes_received = 32;
+    AccessLogType access_log_type = 33;
+}
+
+message ResponseFlags {
+    bool failed_local_healthcheck = 1;
+    bool no_healthy_upstream = 2;
+    bool upstream_request_timeout = 3;
+    bool local_reset = 4;
+    bool upstream_remote_reset = 5;
+    bool upstream_connection_failure = 6;
+    bool upstream_connection_termination = 7;
+    bool upstream_overflow = 8;
+    bool no_route_found = 9;
+    bool delay_injected = 10;
+    bool fault_injected = 11;
+    bool rate_limited = 12;
+    
+    Unauthorized unauthorized_details = 13;
+    message Unauthorized {
+        Reason reason = 1;
+        enum Reason {
+            REASON_UNSPECIFIED = 0;
+            EXTERNAL_SERVICE = 1;
+        }
+    }
+    
+    bool rate_limit_service_error = 14;
+    bool downstream_connection_termination = 15;
+    bool upstream_retry_limit_exceeded = 16;
+    bool stream_idle_timeout = 17;
+    bool invalid_envoy_request_headers = 18;
+    bool downstream_protocol_error = 19;
+    bool upstream_max_stream_duration_reached = 20;
+    bool response_from_cache_filter = 21;
+    bool no_filter_config_found = 22;
+    bool duration_timeout = 23;
+    bool upstream_protocol_error = 24;
+    bool no_cluster_found = 25;
+    bool overload_manager = 26;
+    bool dns_resolution_failure = 27;
+    bool downstream_remote_reset = 28;
+}
+
+message TLSProperties {
+    TLSVersion tls_version = 1;
+    enum TLSVersion {
+        VERSION_UNSPECIFIED = 0;
+        TLSv1 = 1;
+        TLSv1_1 = 2;
+        TLSv1_2 = 3;
+        TLSv1_3 = 4;
+    }
+    
+    google.protobuf.UInt32Value tls_cipher_suite = 2;
+    string tls_sni_hostname = 3;
+    
+    CertificateProperties local_certificate_properties = 4;
+    message CertificateProperties {
+        repeated SubjectAltName subject_alt_name = 1;
+        message SubjectAltName {
+            oneof san {
+                string uri = 1;
+                string dns = 2;
+            }
+        }
+        
+        string subject = 2;
+        string issuer = 3;
+    }
+    
+    CertificateProperties peer_certificate_properties = 5;
+    string tls_session_id = 6;
+    string ja3_fingerprint = 7;
+}
+
+message HTTPRequestProperties {
+    config.core.v3.RequestMethod request_method = 1;
+    string scheme = 2;
+    string authority = 3;
+    google.protobuf.UInt32Value port = 4;
+    string path = 5;
+    string user_agent = 6;
+    string referer = 7;
+    string forwarded_for = 8;
+    string request_id = 9;
+    string original_path = 10;
+    uint64 request_headers_bytes = 11;
+    uint64 request_body_bytes = 12;
+    map<string, string> request_headers = 13;
+    uint64 upstream_header_bytes_sent = 14;
+    uint64 downstream_header_bytes_received = 15;
+}
+
+message HTTPResponseProperties {
+    google.protobuf.UInt32Value response_code = 1;
+    uint64 response_headers_bytes = 2;
+    uint64 response_body_bytes = 3;
+    map<string, string> response_headers = 4;
+    map<string, string> response_trailers = 5;
+    string response_code_details = 6;
+    uint64 upstream_header_bytes_received = 7;
+    uint64 downstream_header_bytes_sent = 8;
+}
+
+enum AccessLogType {
+    NotSet = 0;
+    TcpUpstreamConnected = 1;
+    TcpPeriodic = 2;
+    TcpConnectionEnd = 3;
+    DownstreamStart = 4;
+    DownstreamPeriodic = 5;
+    DownstreamEnd = 6;
+    UpstreamPoolReady = 7;
+    UpstreamPeriodic = 8;
+    UpstreamEnd = 9;
+    DownstreamTunnelSuccessfullyEstablished = 10;
+    UdpTunnelUpstreamConnected = 11;
+    UdpPeriodic = 12;
+    UdpSessionEnd = 13;
+}

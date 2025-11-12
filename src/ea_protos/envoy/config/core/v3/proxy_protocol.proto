@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/core/v3;corev3";
+option java_multiple_files = true;
+option java_outer_classname = "ProxyProtocolProto";
+option java_package = "io.envoyproxy.envoy.config.core.v3";
+
+message ProxyProtocolPassThroughTLVs {
+    PassTLVsMatchType match_type = 1;
+    enum PassTLVsMatchType {
+        INCLUDE_ALL = 0;
+        INCLUDE = 1;
+    }
+    
+    repeated uint32 tlv_type = 2;
+}
+
+message ProxyProtocolConfig {
+    Version version = 1;
+    enum Version {
+        V1 = 0;
+        V2 = 1;
+    }
+    
+    ProxyProtocolPassThroughTLVs pass_through_tlvs = 2;
+}

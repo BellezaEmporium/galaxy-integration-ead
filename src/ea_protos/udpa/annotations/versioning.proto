@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package udpa.annotations;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/cncf/xds/go/annotations";
+
+message VersioningAnnotation {
+    string previous_message_type = 1;
+}
+
+extend google.protobuf.MessageOptions {
+    VersioningAnnotation versioning = 7881811;
+}

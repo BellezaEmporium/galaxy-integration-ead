@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package envoy.extensions.transport_sockets.tls.v3;
+
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/extension.proto";
+import "envoy/extensions/transport_sockets/tls/v3/common.proto";
+import "envoy/extensions/transport_sockets/tls/v3/secret.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3;tlsv3";
+option java_multiple_files = true;
+option java_outer_classname = "TlsProto";
+option java_package = "io.envoyproxy.envoy.extensions.transport_sockets.tls.v3";
+
+message UpstreamTlsContext {
+    CommonTlsContext common_tls_context = 1;
+    string sni = 2;
+    bool allow_renegotiation = 3;
+    google.protobuf.UInt32Value max_session_keys = 4;
+    google.protobuf.BoolValue enforce_rsa_key_usage = 5;
+}
+
+message DownstreamTlsContext {
+    CommonTlsContext common_tls_context = 1;
+    google.protobuf.BoolValue require_client_certificate = 2;
+    google.protobuf.BoolValue require_sni = 3;
+    bool disable_stateful_session_resumption = 10;
+    google.protobuf.Duration session_timeout = 6;
+    
+    OcspStaplePolicy ocsp_staple_policy = 8;
+    enum OcspStaplePolicy {
+        LENIENT_STAPLING = 0;
+        STRICT_STAPLING = 1;
+        MUST_STAPLE = 2;
+    }
+    
+    google.protobuf.BoolValue full_scan_certs_on_sni_mismatch = 9;
+    
+    oneof session_ticket_keys_type {
+        TlsSessionTicketKeys session_ticket_keys = 4;
+        SdsSecretConfig session_ticket_keys_sds_secret_config = 5;
+        bool disable_stateless_session_resumption = 7;
+    }
+}
+
+message TlsKeyLog {
+    string path = 1;
+    repeated config.core.v3.CidrRange local_address_range = 2;
+    repeated config.core.v3.CidrRange remote_address_range = 3;
+}
+
+message CommonTlsContext {
+    TlsParameters tls_params = 1;
+    repeated TlsCertificate tls_certificates = 2;
+    repeated SdsSecretConfig tls_certificate_sds_secret_configs = 6;
+    CertificateProviderPluginInstance tls_certificate_provider_instance = 14;
+    
+    CertificateProvider tls_certificate_certificate_provider = 9 [deprecated = true];
+    message CertificateProvider {
+        string name = 1;
+        
+        oneof config {
+            config.core.v3.TypedExtensionConfig typed_config = 2;
+        }
+    }
+    
+    CertificateProviderInstance tls_certificate_certificate_provider_instance = 11 [deprecated = true];
+    message CertificateProviderInstance {
+        string instance_name = 1;
+        string certificate_name = 2;
+    }
+    
+    repeated string alpn_protocols = 4;
+    config.core.v3.TypedExtensionConfig custom_handshaker = 13;
+    TlsKeyLog key_log = 15;
+    
+    oneof validation_context_type {
+        CertificateValidationContext validation_context = 3;
+        SdsSecretConfig validation_context_sds_secret_config = 7;
+        CombinedCertificateValidationContext combined_validation_context = 8;
+        CertificateProvider validation_context_certificate_provider = 10 [deprecated = true];
+        CertificateProviderInstance validation_context_certificate_provider_instance = 12 [deprecated = true];
+    }
+    
+    reserved 5;
+    
+    message CombinedCertificateValidationContext {
+        CertificateValidationContext default_validation_context = 1;
+        SdsSecretConfig validation_context_sds_secret_config = 2;
+        CertificateProvider validation_context_certificate_provider = 3 [deprecated = true];
+        CertificateProviderInstance validation_context_certificate_provider_instance = 4 [deprecated = true];
+    }
+}

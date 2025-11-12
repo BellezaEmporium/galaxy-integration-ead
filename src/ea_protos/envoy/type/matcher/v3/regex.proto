@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package envoy.type.matcher.v3;
+
+import "google/protobuf/wrappers.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3;matcherv3";
+option java_multiple_files = true;
+option java_outer_classname = "RegexProto";
+option java_package = "io.envoyproxy.envoy.type.matcher.v3";
+
+message RegexMatcher {
+    string regex = 2;
+    
+    oneof engine_type {
+        GoogleRE2 google_re2 = 1 [deprecated = true];
+    }
+    
+    message GoogleRE2 {
+        google.protobuf.UInt32Value max_program_size = 1 [deprecated = true];
+    }
+}
+
+message RegexMatchAndSubstitute {
+    RegexMatcher pattern = 1;
+    string substitution = 2;
+}

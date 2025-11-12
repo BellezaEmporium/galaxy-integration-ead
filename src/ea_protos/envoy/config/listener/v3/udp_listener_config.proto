@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package envoy.config.listener.v3;
+
+import "envoy/config/core/v3/extension.proto";
+import "envoy/config/core/v3/udp_socket_config.proto";
+import "envoy/config/listener/v3/quic_config.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3;listenerv3";
+option java_multiple_files = true;
+option java_outer_classname = "UdpListenerConfigProto";
+option java_package = "io.envoyproxy.envoy.config.listener.v3";
+
+message UdpListenerConfig {
+    core.v3.UdpSocketConfig downstream_socket_config = 5;
+    QuicProtocolOptions quic_options = 7;
+    core.v3.TypedExtensionConfig udp_packet_packet_writer_config = 8;
+    
+    reserved 1, 2, 3, 4, 6, "config";
+}
+
+message ActiveRawUdpListenerConfig {
+    
+}

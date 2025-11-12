@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package udpa.annotations;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/cncf/xds/go/annotations";
+
+message StatusAnnotation {
+    bool work_in_progress = 1;
+    PackageVersionStatus package_version_status = 2;
+}
+
+enum PackageVersionStatus {
+    UNKNOWN = 0;
+    FROZEN = 1;
+    ACTIVE = 2;
+    NEXT_MAJOR_VERSION_CANDIDATE = 3;
+}
+
+extend google.protobuf.FileOptions {
+    StatusAnnotation file_status = 222707719;
+}

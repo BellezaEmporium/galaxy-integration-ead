@@ -265,19 +265,19 @@ class PCSign:
     """
     PCSign represents a unique signature for a PC based on its hardware information.
     """
-    bbm: str = field(init=False)
-    bsn: str = field(init=False)
-    gid: int = field(init=False)
-    hsn: str = field(init=False)
-    mbm: str = field(init=False)
-    msn: str = field(init=False)
-    mac: str = field(init=False)
-    mid: str = field(init=False)
-    osn: str = field(init=False)
-    osi: str = field(init=False)
-    ts: str = field(init=False)
-    av: str = "v1"
-    sv: PCSignVersion = field(default_factory=lambda: random.choice(list(PCSignVersion)))
+    bbm: str = field(init=False) # baseboard manufacturer
+    bsn: str = field(init=False) # baseboard serial number
+    gid: int = field(init=False) # gpu device id
+    hsn: str = field(init=False) # hard disk serial number
+    mbm: str = field(init=False) # motherboard manufacturer
+    msn: str = field(init=False) # motherboard serial number
+    mac: str = field(init=False) # mac address
+    mid: str = field(init=False) # machine id
+    osn: str = field(init=False) # operating system name
+    osi: str = field(init=False) # operating system installation date
+    ts: str = field(init=False)  # timestamp
+    av: str = "v1"               # always v1, sort of algorithm version
+    sv: PCSignVersion = field(default_factory=lambda: random.choice(list(PCSignVersion))) # signature
 
     def __post_init__(self):
         cache = HardwareInfoCache()
@@ -300,7 +300,8 @@ class PCSign:
         ]
         
         if self.mac:
-            buffer_parts.append(str(self.mac))
+            print(self.mac)
+            buffer_parts.append(self.mac)
         
         buffer = ''.join(buffer_parts)
 

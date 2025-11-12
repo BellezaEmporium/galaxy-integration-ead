@@ -1,7 +1,13 @@
-__version__ = "0.44.5"
+__version__ = "0.44.6"
 
 __changelog__ = {
     "unreleased":"""""",
+    "0.44.6":
+    """
+        - added base part for user presence & rich presence from EA data
+        - added protobufs from EA for presence parsing
+        - fixed test
+    """,
     "0.44.5":
     """
         - fixed subscription gathering

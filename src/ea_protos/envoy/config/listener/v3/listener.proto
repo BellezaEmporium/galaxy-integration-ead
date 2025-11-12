@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package envoy.config.listener.v3;
+
+import "envoy/config/accesslog/v3/accesslog.proto";
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/extension.proto";
+import "envoy/config/core/v3/socket_option.proto";
+import "envoy/config/listener/v3/api_listener.proto";
+import "envoy/config/listener/v3/listener_components.proto";
+import "envoy/config/listener/v3/udp_listener_config.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+import "xds/annotations/v3/status.proto";
+import "xds/core/v3/collection_entry.proto";
+import "xds/type/matcher/v3/matcher.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/security.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3;listenerv3";
+option java_multiple_files = true;
+option java_outer_classname = "ListenerProto";
+option java_package = "io.envoyproxy.envoy.config.listener.v3";
+
+message AdditionalAddress {
+    core.v3.Address address = 1;
+    core.v3.SocketOptionsOverride socket_options = 2;
+}
+
+message ListenerCollection {
+    repeated xds.core.v3.CollectionEntry entries = 1;
+}
+
+message Listener {
+    string name = 1;
+    core.v3.Address address = 2;
+    repeated AdditionalAddress additional_addresses = 33;
+    string stat_prefix = 28;
+    repeated FilterChain filter_chains = 3;
+    xds.type.matcher.v3.Matcher filter_chain_matcher = 32;
+    google.protobuf.BoolValue use_original_dst = 4;
+    FilterChain default_filter_chain = 25;
+    google.protobuf.UInt32Value per_connection_buffer_limit_bytes = 5;
+    core.v3.Metadata metadata = 6;
+    
+    DeprecatedV1 deprecated_v1 = 7 [deprecated = true];
+    message DeprecatedV1 {
+        google.protobuf.BoolValue bind_to_port = 1;
+    }
+    
+    DrainType drain_type = 8;
+    enum DrainType {
+        DEFAULT = 0;
+        MODIFY_ONLY = 1;
+    }
+    
+    repeated ListenerFilter listener_filters = 9;
+    google.protobuf.Duration listener_filters_timeout = 15;
+    bool continue_on_listener_filters_timeout = 17;
+    google.protobuf.BoolValue transparent = 10;
+    google.protobuf.BoolValue freebind = 11;
+    repeated core.v3.SocketOption socket_options = 13;
+    google.protobuf.UInt32Value tcp_fast_open_queue_length = 12;
+    core.v3.TrafficDirection traffic_direction = 16;
+    UdpListenerConfig udp_listener_config = 18;
+    ApiListener api_listener = 19;
+    
+    ConnectionBalanceConfig connection_balance_config = 20;
+    message ConnectionBalanceConfig {
+        oneof balance_type {
+            ExactBalance exact_balance = 1;
+            core.v3.TypedExtensionConfig extend_balance = 2;
+        }
+        
+        message ExactBalance {
+            
+        }
+    }
+    
+    bool reuse_port = 21 [deprecated = true];
+    google.protobuf.BoolValue enable_reuse_port = 29;
+    repeated accesslog.v3.AccessLog access_log = 22;
+    google.protobuf.UInt32Value tcp_backlog_size = 24;
+    google.protobuf.UInt32Value max_connections_to_accept_per_socket_event = 34;
+    google.protobuf.BoolValue bind_to_port = 26;
+    bool enable_mptcp = 30;
+    bool ignore_global_conn_limit = 31;
+    bool bypass_overload_manager = 35;
+    
+    oneof listener_specifier {
+        InternalListenerConfig internal_listener = 27;
+    }
+    
+    reserved 14, 23;
+    
+    message InternalListenerConfig {
+        
+    }
+}
+
+message ListenerManager {
+    
+}
+
+message ValidationListenerManager {
+    
+}
+
+message ApiListenerManager {
+    
+}

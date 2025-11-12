@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package xds.type.matcher.v3;
+
+import "xds/type/matcher/v3/regex.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/cncf/xds/go/xds/type/matcher/v3";
+option java_multiple_files = true;
+option java_outer_classname = "StringProto";
+option java_package = "com.github.xds.type.matcher.v3";
+
+message StringMatcher {
+    bool ignore_case = 6;
+    
+    oneof match_pattern {
+        string exact = 1;
+        string prefix = 2;
+        string suffix = 3;
+        RegexMatcher safe_regex = 5;
+        string contains = 7;
+    }
+}
+
+message ListStringMatcher {
+    repeated StringMatcher patterns = 1;
+}

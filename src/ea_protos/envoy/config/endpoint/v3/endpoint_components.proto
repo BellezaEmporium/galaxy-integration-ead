@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package envoy.config.endpoint.v3;
+
+import "envoy/config/core/v3/address.proto";
+import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/config_source.proto";
+import "envoy/config/core/v3/health_check.proto";
+import "google/protobuf/wrappers.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3;endpointv3";
+option java_multiple_files = true;
+option java_outer_classname = "EndpointComponentsProto";
+option java_package = "io.envoyproxy.envoy.config.endpoint.v3";
+
+message Endpoint {
+    core.v3.Address address = 1;
+    
+    HealthCheckConfig health_check_config = 2;
+    message HealthCheckConfig {
+        uint32 port_value = 1;
+        string hostname = 2;
+        core.v3.Address address = 3;
+        bool disable_active_health_check = 4;
+    }
+    
+    string hostname = 3;
+    
+    repeated AdditionalAddress additional_addresses = 4;
+    message AdditionalAddress {
+        core.v3.Address address = 1;
+    }
+}
+
+message LbEndpoint {
+    core.v3.HealthStatus health_status = 2;
+    core.v3.Metadata metadata = 3;
+    google.protobuf.UInt32Value load_balancing_weight = 4;
+    
+    oneof host_identifier {
+        Endpoint endpoint = 1;
+        string endpoint_name = 5;
+    }
+}
+
+message LedsClusterLocalityConfig {
+    core.v3.ConfigSource leds_config = 1;
+    string leds_collection_name = 2;
+}
+
+message LocalityLbEndpoints {
+    core.v3.Locality locality = 1;
+    core.v3.Metadata metadata = 9;
+    repeated LbEndpoint lb_endpoints = 2;
+    google.protobuf.UInt32Value load_balancing_weight = 3;
+    uint32 priority = 5;
+    google.protobuf.UInt32Value proximity = 6;
+    
+    oneof lb_config {
+        LbEndpointList load_balancer_endpoints = 7;
+        LedsClusterLocalityConfig leds_cluster_locality_config = 8;
+    }
+    
+    message LbEndpointList {
+        repeated LbEndpoint lb_endpoints = 1;
+    }
+}

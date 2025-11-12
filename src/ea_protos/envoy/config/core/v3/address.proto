@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+import "envoy/config/core/v3/extension.proto";
+import "envoy/config/core/v3/socket_option.proto";
+import "google/protobuf/wrappers.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/core/v3;corev3";
+option java_multiple_files = true;
+option java_outer_classname = "AddressProto";
+option java_package = "io.envoyproxy.envoy.config.core.v3";
+
+message Pipe {
+    string path = 1;
+    uint32 mode = 2;
+}
+
+message EnvoyInternalAddress {
+    string endpoint_id = 2;
+    
+    oneof address_name_specifier {
+        string server_listener_name = 1;
+    }
+}
+
+message SocketAddress {
+    Protocol protocol = 1;
+    enum Protocol {
+        TCP = 0;
+        UDP = 1;
+    }
+    
+    string address = 2;
+    string resolver_name = 5;
+    bool ipv4_compat = 6;
+    
+    oneof port_specifier {
+        uint32 port_value = 3;
+        string named_port = 4;
+    }
+}
+
+message TcpKeepalive {
+    google.protobuf.UInt32Value keepalive_probes = 1;
+    google.protobuf.UInt32Value keepalive_time = 2;
+    google.protobuf.UInt32Value keepalive_interval = 3;
+}
+
+message ExtraSourceAddress {
+    SocketAddress address = 1;
+    SocketOptionsOverride socket_options = 2;
+}
+
+message BindConfig {
+    SocketAddress source_address = 1;
+    google.protobuf.BoolValue freebind = 2;
+    repeated SocketOption socket_options = 3;
+    repeated ExtraSourceAddress extra_source_addresses = 5;
+    repeated SocketAddress additional_source_addresses = 4 [deprecated = true];
+    TypedExtensionConfig local_address_selector = 6;
+}
+
+message Address {
+    oneof address {
+        SocketAddress socket_address = 1;
+        Pipe pipe = 2;
+        EnvoyInternalAddress envoy_internal_address = 3;
+    }
+}
+
+message CidrRange {
+    string address_prefix = 1;
+    google.protobuf.UInt32Value prefix_len = 2;
+}

@@ -1,0 +1,150 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+import "envoy/config/core/v3/extension.proto";
+import "envoy/type/v3/percent.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+import "xds/annotations/v3/status.proto";
+import "envoy/annotations/deprecation.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/core/v3;corev3";
+option java_multiple_files = true;
+option java_outer_classname = "ProtocolProto";
+option java_package = "io.envoyproxy.envoy.config.core.v3";
+
+message TcpProtocolOptions {
+    
+}
+
+message QuicKeepAliveSettings {
+    google.protobuf.Duration max_interval = 1;
+    google.protobuf.Duration initial_interval = 2;
+}
+
+message QuicProtocolOptions {
+    google.protobuf.UInt32Value max_concurrent_streams = 1;
+    google.protobuf.UInt32Value initial_stream_window_size = 2;
+    google.protobuf.UInt32Value initial_connection_window_size = 3;
+    google.protobuf.UInt32Value num_timeouts_to_trigger_port_migration = 4;
+    QuicKeepAliveSettings connection_keepalive = 5;
+    string connection_options = 6;
+    string client_connection_options = 7;
+    google.protobuf.Duration idle_network_timeout = 8;
+}
+
+message UpstreamHttpProtocolOptions {
+    bool auto_sni = 1;
+    bool auto_san_validation = 2;
+    string override_auto_sni_header = 3;
+}
+
+message AlternateProtocolsCacheOptions {
+    string name = 1;
+    google.protobuf.UInt32Value max_entries = 2;
+    TypedExtensionConfig key_value_store_config = 3;
+    
+    repeated AlternateProtocolsCacheEntry prepopulated_entries = 4;
+    message AlternateProtocolsCacheEntry {
+        string hostname = 1;
+        uint32 port = 2;
+    }
+    
+    repeated string canonical_suffixes = 5;
+}
+
+message HttpProtocolOptions {
+    google.protobuf.Duration idle_timeout = 1;
+    google.protobuf.Duration max_connection_duration = 3;
+    google.protobuf.UInt32Value max_headers_count = 2;
+    google.protobuf.Duration max_stream_duration = 4;
+    
+    HeadersWithUnderscoresAction headers_with_underscores_action = 5;
+    enum HeadersWithUnderscoresAction {
+        ALLOW = 0;
+        REJECT_REQUEST = 1;
+        DROP_HEADER = 2;
+    }
+    
+    google.protobuf.UInt32Value max_requests_per_connection = 6;
+}
+
+message Http1ProtocolOptions {
+    google.protobuf.BoolValue allow_absolute_url = 1;
+    bool accept_http_10 = 2;
+    string default_host_for_http_10 = 3;
+    
+    HeaderKeyFormat header_key_format = 4;
+    message HeaderKeyFormat {
+        oneof header_format {
+            ProperCaseWords proper_case_words = 1;
+            TypedExtensionConfig stateful_formatter = 8;
+        }
+        
+        message ProperCaseWords {
+            
+        }
+    }
+    
+    bool enable_trailers = 5;
+    bool allow_chunked_length = 6;
+    google.protobuf.BoolValue override_stream_error_on_invalid_http_message = 7;
+    bool send_fully_qualified_url = 8;
+    google.protobuf.BoolValue use_balsa_parser = 9;
+    bool allow_custom_methods = 10;
+}
+
+message KeepaliveSettings {
+    google.protobuf.Duration interval = 1;
+    google.protobuf.Duration timeout = 2;
+    type.v3.Percent interval_jitter = 3;
+    google.protobuf.Duration connection_idle_interval = 4;
+}
+
+message Http2ProtocolOptions {
+    google.protobuf.UInt32Value hpack_table_size = 1;
+    google.protobuf.UInt32Value max_concurrent_streams = 2;
+    google.protobuf.UInt32Value initial_stream_window_size = 3;
+    google.protobuf.UInt32Value initial_connection_window_size = 4;
+    bool allow_connect = 5;
+    bool allow_metadata = 6;
+    google.protobuf.UInt32Value max_outbound_frames = 7;
+    google.protobuf.UInt32Value max_outbound_control_frames = 8;
+    google.protobuf.UInt32Value max_consecutive_inbound_frames_with_empty_payload = 9;
+    google.protobuf.UInt32Value max_inbound_priority_frames_per_stream = 10;
+    google.protobuf.UInt32Value max_inbound_window_update_frames_per_data_frame_sent = 11;
+    bool stream_error_on_invalid_http_messaging = 12 [deprecated = true];
+    google.protobuf.BoolValue override_stream_error_on_invalid_http_message = 14;
+    
+    repeated SettingsParameter custom_settings_parameters = 13;
+    message SettingsParameter {
+        google.protobuf.UInt32Value identifier = 1;
+        google.protobuf.UInt32Value value = 2;
+    }
+    
+    KeepaliveSettings connection_keepalive = 15;
+    google.protobuf.BoolValue use_oghttp2_codec = 16;
+}
+
+message GrpcProtocolOptions {
+    Http2ProtocolOptions http2_protocol_options = 1;
+}
+
+message Http3ProtocolOptions {
+    QuicProtocolOptions quic_protocol_options = 1;
+    google.protobuf.BoolValue override_stream_error_on_invalid_http_message = 2;
+    bool allow_extended_connect = 5;
+    bool allow_metadata = 6;
+}
+
+message SchemeHeaderTransformation {
+    bool match_upstream = 2;
+    
+    oneof transformation {
+        string scheme_to_overwrite = 1;
+    }
+}

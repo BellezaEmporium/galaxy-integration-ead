@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package envoy.config.route.v3;
+
+import "envoy/config/route/v3/route.proto";
+import "udpa/annotations/migrate.proto";
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/config/route/v3;routev3";
+option java_multiple_files = true;
+option java_outer_classname = "ScopedRouteProto";
+option java_package = "io.envoyproxy.envoy.config.route.v3";
+
+message ScopedRouteConfiguration {
+    bool on_demand = 4;
+    string name = 1;
+    string route_configuration_name = 2;
+    RouteConfiguration route_configuration = 5;
+    
+    Key key = 3;
+    message Key {
+        repeated Fragment fragments = 1;
+        message Fragment {
+            oneof type {
+                string string_key = 1;
+            }
+        }
+    }
+}

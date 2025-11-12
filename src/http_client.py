@@ -3,7 +3,8 @@ import json
 import logging
 import time
 import asyncio
-from typing import Optional
+from typing import Optional, Callable
+from presence import parse_presence, register_protobuf_parser, Presence
 import aiohttp
 from aiohttp import ClientSession, CookieJar, ClientTimeout
 from galaxy.http import HttpClient
@@ -69,6 +70,12 @@ class AuthenticatedHttpClient(HttpClient):
         self._request_cache = {}
         self._cache_timestamps = {}
         self._cache_expiry = 300
+
+        # Presence handling
+        self._presence_callback: Optional[Callable[[Presence], None]] = None
+        self._presence_cache = {}
+        self._presence_throttle_seconds = 1.0
+        self._last_presence_emitted_at = {}
 
     async def authenticate(self, cookies: Optional[dict] = None):
         """Compatibility method: optionally set cookies. Real auth happens via OAuth code exchange.
@@ -313,6 +320,61 @@ class AuthenticatedHttpClient(HttpClient):
     def set_save_tokens_callback(self, callback):
         """Set callback to save access and refresh tokens"""
         self._save_tokens_callback = callback
+
+    def set_presence_callback(self, callback: Callable[[Presence], None]):
+        """Register callback for parsed presence updates.
+        Callback may be sync or async.
+        """
+        self._presence_callback = callback
+
+    def register_protobuf_message(self, message_class):
+        """Register generated protobuf message (pb2 class) to be used to parse
+        incoming bytes. Uses google.protobuf.json_format.MessageToDict internally.
+        """
+        try:
+            from google.protobuf.json_format import MessageToDict
+            def _parser(b: bytes) -> dict:
+                msg = message_class()
+                msg.ParseFromString(b)
+                return MessageToDict(msg, preserving_proto_field_name=True, use_integers_for_enums=True)
+            register_protobuf_parser(_parser)
+            logger.info("Registered protobuf parser for %s", getattr(message_class, 'DESCRIPTOR', None))
+        except Exception:
+            logger.exception("Failed to register protobuf message parser")
+
+    async def handle_presence_message(self, raw_message):
+        """Feed the raw message (dict or protobuf bytes) into presence parser and
+        emit callback if present changed or not throttled.
+        """
+        try:
+            if not raw_message:
+                return
+
+            presence = parse_presence(raw_message)
+            if not presence or not presence.account_id:
+                return
+
+            acc = presence.account_id
+            now = time.time()
+            last_pres = self._presence_cache.get(acc)
+            last_emit = self._last_presence_emitted_at.get(acc, 0)
+
+            # Only emit on change or when throttle window expired
+            if last_pres and presence == last_pres and (now - last_emit) < self._presence_throttle_seconds:
+                return
+
+            self._presence_cache[acc] = presence
+            self._last_presence_emitted_at[acc] = now
+
+            if self._presence_callback:
+                cb = self._presence_callback
+                if asyncio.iscoroutinefunction(cb):
+                    await cb(presence)
+                else:
+                    cb(presence)
+
+        except Exception:
+            logger.exception("Error handling presence message")
 
     def load_lats_from_cache(self, value: Optional[str]):
         self._last_access_token_success = int(value) if value else None
