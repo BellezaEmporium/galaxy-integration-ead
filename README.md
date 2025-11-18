@@ -30,6 +30,8 @@ for offer_id in offer_ids:
 Make sure the line after the for function is properly indented, as the plugin wouldn't work without that condition met.
 Load Galaxy afterwards, and reload the plugin. Once you've confirmed the games are now properly updated, you can reinstate the lines back.
 
+UPDATED 11/2025 : Starting with Windows 11, version 25H2, Microsoft has deprecated and removed both WMIC (Windows Management Instrumentation Command-line) and PowerShell 2.0 from the operating system. Although the provided PowerShell script (.ps1) remains compatible, users may encounter errors after the update if the script attempts to invoke WMIC, as the utility is no longer included in this release.
+
 ## Disclaimer
 
 Please note that, in order to make this plugin fully functional, you need to have a valid EA Desktop account.
