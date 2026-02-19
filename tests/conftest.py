@@ -26,7 +26,7 @@ def access_token():
 
 @pytest.fixture()
 def local_games_path(tmpdir):
-    with patch("plugin.get_local_content_path") as mock_local_games_path:
+    with patch("lgames_manifests.get_local_content_path") as mock_local_games_path:
         mock_local_games_path.return_value = tmpdir
         yield mock_local_games_path
 
@@ -78,7 +78,7 @@ def backend_client():
 
 @pytest.fixture()
 def process_iter_mock(mocker):
-    return mocker.patch("local_games.process_iter")
+    return mocker.patch("lgames_manifests.process_iter")
 
 
 @pytest.fixture()

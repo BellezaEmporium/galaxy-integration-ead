@@ -215,80 +215,6 @@ class EAPlugin(Plugin):
             self._http_client.set_presence_callback(_presence_wrapper)
         except Exception:
             logger.exception("Failed to set presence callback on http_client")
-
-        # Try to auto-register protobuf parsers if pb2 were generated
-        try:
-            # Import generated pb2 modules, if present
-            try:
-                import importlib
-                server_mod = None
-                try:
-                    server_mod = importlib.import_module('ea_protos.Server_pb2')
-                except Exception:
-                    try:
-                        server_mod = importlib.import_module('Server_pb2')
-                        logger.debug('Found generated Server_pb2 at top-level')
-                    except Exception:
-                        server_mod = None
-
-                if server_mod:
-                    if hasattr(server_mod, 'StreamMessage'):
-                        self._http_client.register_protobuf_message(server_mod.StreamMessage)
-                    if hasattr(server_mod, 'BinaryMessage'):
-                        self._http_client.register_protobuf_message(server_mod.BinaryMessage)
-                    logger.info("Registered pb2 parsers for StreamMessage/BinaryMessage")
-                else:
-                    logger.debug("No generated Server_pb2 found or registration failed")
-            except Exception as e:
-                logger.debug(f"No generated Server_pb2 found or registration failed: {e}")
-            # Also try to auto-register any message types that contain 'presence' keyword
-            try:
-                import pkgutil, importlib
-                # Try the ea_protos package
-                try:
-                    import ea_protos as epkg
-                    pkg_iter = pkgutil.iter_modules(epkg.__path__)
-                except Exception:
-                    pkg_iter = ()
-                for finder, modname, ispkg in pkg_iter:
-                    try:
-                        mod = importlib.import_module(f"ea_protos.{modname}")
-                    except Exception:
-                        continue
-                    for attr_name in dir(mod):
-                        attr = getattr(mod, attr_name)
-                        if hasattr(attr, 'DESCRIPTOR'):
-                            try:
-                                desc_name = getattr(attr.DESCRIPTOR, 'name', '') or ''
-                                if 'presence' in desc_name.lower() or 'presence' in attr_name.lower():
-                                    self._http_client.register_protobuf_message(attr)
-                                    logger.info(f"Registered protobuf parser for {desc_name} ({modname}.{attr_name})")
-                            except Exception:
-                                continue
-            except Exception:
-                logger.debug("Auto-registration of presence-containing pb2 messages failed")
-            # Also try to import top-level generated pb2 modules such as Server_pb2 or Messages_pb2
-            try:
-                import importlib
-                for candidate in ('Server_pb2', 'Messages_pb2'):
-                    try:
-                        mod = importlib.import_module(candidate)
-                    except Exception:
-                        continue
-                    for attr_name in dir(mod):
-                        attr = getattr(mod, attr_name)
-                        if hasattr(attr, 'DESCRIPTOR'):
-                            try:
-                                desc_name = getattr(attr.DESCRIPTOR, 'name', '') or ''
-                                if 'presence' in desc_name.lower() or 'presence' in attr_name.lower():
-                                    self._http_client.register_protobuf_message(attr)
-                                    logger.info(f"Registered protobuf parser for {desc_name} ({candidate}.{attr_name})")
-                            except Exception:
-                                continue
-            except Exception:
-                logger.debug('Top-level pb2 auto-registration failed')
-        except Exception:
-            logger.exception("Failed to register generated protobuf parsers")
         
         self._backend_client = EABackendClient(self._http_client)
         
@@ -299,6 +225,21 @@ class EAPlugin(Plugin):
         
         self._persistent_cache_updated = False
         self._last_offers_prefetch = 0
+        self._prefetch_task = None  # Track pending prefetch task to avoid duplicates
+        raw_update_user_presence = self.update_user_presence
+        update_user_presence = lambda user_id, presence: raw_update_user_presence(user_id, presence)
+
+    def _schedule_offers_prefetch(self):
+        """Schedule background offers prefetch if not already scheduled.
+        
+        Prevents duplicate asyncio.create_task() calls for the same operation.
+        If a prefetch task is already pending, this is a no-op.
+        """
+        if self._prefetch_task is None or self._prefetch_task.done():
+            self._prefetch_task = asyncio.create_task(self._prefetch_offers_background())
+            logger.debug("Scheduled offers background prefetch")
+        else:
+            logger.debug("Offers prefetch already scheduled, skipping duplicate")
 
     async def _prefetch_offers_background(self):
         try:
@@ -313,9 +254,9 @@ class EAPlugin(Plugin):
             await asyncio.sleep(2)  # Let session settle
             entitlements = await self._backend_client.get_entitlements()
             offer_ids = [
-                OfferId(e["originOfferId"]) 
+                OfferId(e["id"]) 
                 for e in entitlements 
-                if e.get("originOfferId")
+                if e.get("id")
             ]
             
             if offer_ids:
@@ -369,7 +310,7 @@ class EAPlugin(Plugin):
                 if access_token and self._http_client.is_access_token_valid():
                     try:
                         user_id, persona_id, user_name = await self._auth_manager.get_identity()
-                        asyncio.create_task(self._prefetch_offers_background())
+                        self._schedule_offers_prefetch()
                         return Authentication(user_id, user_name)
                     except Exception as e:
                         logger.info(f"Stored access token invalid, trying refresh: {e}")
@@ -379,7 +320,7 @@ class EAPlugin(Plugin):
                     try:
                         await self._force_refresh_access_token()
                         user_id, persona_id, user_name = await self._auth_manager.get_identity()
-                        asyncio.create_task(self._prefetch_offers_background())
+                        self._schedule_offers_prefetch()
                         return Authentication(user_id, user_name)
                     except Exception as e:
                         logger.info(f"Refresh token failed, starting fresh auth: {e}")
@@ -389,7 +330,7 @@ class EAPlugin(Plugin):
         
         logger.info("Starting new authentication flow")
         return await self._auth_manager.begin_auth_flow()
-
+    
     async def _force_refresh_access_token(self):
         if not self._http_client._refresh_token:
             raise AuthenticationRequired("No refresh token available")
@@ -466,7 +407,7 @@ class EAPlugin(Plugin):
                 logger.warning(f"Failed to persist web cookies: {e}")
 
         user_id, persona_id, user_name = await self._auth_manager.authenticate_with_code(code)
-        asyncio.create_task(self._prefetch_offers_background())
+        self._schedule_offers_prefetch()
         return Authentication(user_id, user_name)
 
     @staticmethod
@@ -487,7 +428,7 @@ class EAPlugin(Plugin):
             else:
                 missing_offers.append(offer_id)
 
-        # Fetch missing offers in batches
+        # Fetch missing offers in batches (in parallel for speedup)
         if missing_offers:
             MAX_BATCH = 100
             # Deduplicate while preserving order
@@ -498,21 +439,33 @@ class EAPlugin(Plugin):
                     seen.add(oid)
                     unique_missing.append(oid)
 
-            for start in range(0, len(unique_missing), MAX_BATCH):
-                chunk = unique_missing[start:start + MAX_BATCH]
+            # Create batch chunks
+            batches = [
+                unique_missing[start:start + MAX_BATCH] 
+                for start in range(0, len(unique_missing), MAX_BATCH)
+            ]
+            
+            # Fetch all batches in parallel
+            async def fetch_batch(chunk):
                 try:
-                    gathered_offers = await self._backend_client.get_offers(chunk)
-                    if isinstance(gathered_offers, dict):
-                        for key, offer in gathered_offers.items():
-                            if not isinstance(offer, dict):
-                                continue
-                            origin_offer_id = offer.get('offerId') or offer.get('originOfferId') or key
-                            if origin_offer_id:
-                                oid = OfferId(origin_offer_id)
-                                offers[oid] = offer
-                                self._offer_id_cache[oid] = offer
+                    return await self._backend_client.get_offers(chunk)
                 except Exception as e:
-                    logger.error(f"Failed to fetch offers batch starting at {start}: {e}")
+                    logger.error(f"Failed to fetch offers batch: {e}")
+                    return {}
+            
+            results = await asyncio.gather(*[fetch_batch(chunk) for chunk in batches])
+            
+            # Process results
+            for gathered_offers in results:
+                if isinstance(gathered_offers, dict):
+                    for key, offer in gathered_offers.items():
+                        if not isinstance(offer, dict):
+                            continue
+                        origin_offer_id = offer.get('offerId') or offer.get('originOfferId') or key
+                        if origin_offer_id:
+                            oid = OfferId(origin_offer_id)
+                            offers[oid] = offer
+                            self._offer_id_cache[oid] = offer
 
         return offers
 
@@ -551,6 +504,13 @@ class EAPlugin(Plugin):
             logger.error("Persona ID is None, user might not be properly authenticated")
             raise AuthenticationRequired("User not properly authenticated")
 
+        # Ensure offers are in cache
+        offer_ids = [self._offer_id_from_game_id(game_id) for game_id in game_ids]
+        try:
+            await self._get_offers(offer_ids)
+        except Exception as e:
+            logger.exception("Failed to fetch offers in batch: %s", repr(e))
+
         # Build mapping from game slug to achievement set using achievementSetOverride
         slug_to_ach_set: Dict[GameSlug, AchievementSet] = {}
         unique_ach_sets: Set[AchievementSet] = set()
@@ -582,12 +542,36 @@ class EAPlugin(Plugin):
                 achievements=achievements
             )
 
-        # Fetch achievements per achievement set to preserve mapping
-        for ach_set in unique_ach_sets:
-            set_id, ach_list = await self._backend_client.get_achievements([ach_set], self._auth_manager.persona_id)
-            if set_id:
-                achievement_set_obj = AchievementSet(set_id)
-                achievements[achievement_set_obj] = ach_list or []
+        # Fetch achievements per achievement set in parallel to reduce latency
+        persona_id = self._auth_manager.persona_id
+        if not persona_id:
+            logger.warning("persona_id not available, skipping achievements")
+            return AchievementsImportContext(
+                owned_games=achievement_sets,
+                achievements=achievements
+            )
+
+        async def fetch_achievement_set(ach_set: AchievementSet):
+            set_id, ach_list = await self._backend_client.get_achievements([ach_set], persona_id)
+            return (set_id, ach_list)
+        
+        # Gather all achievement set requests in parallel
+        try:
+            results = await asyncio.gather(
+                *[fetch_achievement_set(ach_set) for ach_set in unique_ach_sets],
+                return_exceptions=True
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to fetch achievement set: {result}")
+                    continue
+                if isinstance(result, tuple) and len(result) == 2:
+                    set_id, ach_list = result
+                    if set_id:
+                        achievement_set_obj = AchievementSet(set_id)
+                        achievements[achievement_set_obj] = ach_list or []
+        except Exception as e:
+            logger.error(f"Achievement fetch failed: {e}")
 
         # Build mapping owned_games from slug_to_ach_set
         achievement_sets.update(slug_to_ach_set)
@@ -741,7 +725,7 @@ class EAPlugin(Plugin):
             # EA Complete workflow: CreateSession -> ConnectSession -> SubscribeToPresence
             success = await self._complete_presence_workflow(access_token, user_id, user_presence)
             
-                # Fallback methods if the full workflow fails
+            # Fallback methods if the full workflow fails
             if not success:
                 logger.info("Complete workflow failed, trying individual methods")
                 
@@ -1401,7 +1385,7 @@ class EAPlugin(Plugin):
                     logger.debug(f"Synchronous offers prefetch failed: {e}")
             else:
                 # schedule background prefetch if we cannot fetch now
-                asyncio.create_task(self._prefetch_offers_background())
+                self._schedule_offers_prefetch()
 
         if self._local_game_manager._local_games_update_in_progress:
             logger.debug("Local games update in progress, returning cached values")
@@ -1425,7 +1409,7 @@ class EAPlugin(Plugin):
             return
         # If offers cache isn't ready, schedule background prefetch
         if not self._offer_id_cache:
-            asyncio.create_task(self._prefetch_offers_background())
+            self._schedule_offers_prefetch()
             return
         # Don't overlap update operations
         if self._local_game_manager._local_games_update_in_progress:

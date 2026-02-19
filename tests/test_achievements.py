@@ -235,7 +235,7 @@ async def test_achievements_parsing(
 ):
     http_client.get.return_value = create_json_response(backend_response)
 
-    assert parsed == await EABackendClient(http_client).get_achievements(user_id, persona_id)
+    assert parsed == await EABackendClient(http_client).get_achievements([explicit_set] if explicit_set else [], persona_id)
 
     http_client.get.assert_called_once_with(
         "https://achievements.gameservices.ea.com/achievements/personas/{user_id}{specific_set}/all".format(
