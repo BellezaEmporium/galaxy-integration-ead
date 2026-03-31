@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package eax.protobuf;
+
+message Icon {
+    int32 width = 1;
+    string path = 2;
+}
+
+message Achievement {
+    string setId = 1;
+    string id = 2;
+    string name = 3;
+    string description = 4;
+    string howTo = 5;
+    string date = 6;
+    string expirationDate = 7;
+    int32 pointProgress = 8;
+    int32 totalPointsRequired = 9;
+    int32 awardCount = 10;
+    repeated Icon icons = 11;
+}
+
+message AchievementsCache {
+    uint64 lastRefresh = 1;
+    repeated Achievement achievements = 2;
+    uint32 schemaVersion = 3;
+}

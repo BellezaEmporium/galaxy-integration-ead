@@ -1,0 +1,15 @@
+# GUI and WebEngine
+PyQt5
+PyQtWebEngine
+
+# Protobuf
+protobuf
+
+# HTTP requests
+requests
+
+# For XML handling
+lxml
+
+# For Qt Designer UI
+PyQt5-sip

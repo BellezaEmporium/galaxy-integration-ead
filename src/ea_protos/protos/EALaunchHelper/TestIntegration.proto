@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package eax.services.ipc.testIntegration;
+
+message NotifyLaunchHelperErrorReq {
+    string errorStringId = 1;
+}
+
+message NotifyLaunchHelperErrorResp {
+    
+}

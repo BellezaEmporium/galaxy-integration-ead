@@ -1,0 +1,1076 @@
+syntax = "proto3";
+
+package eax.services.ipc;
+
+import "google/protobuf/timestamp.proto";
+
+message UpdateStatus {
+    int32 status = 1;
+}
+
+message UpdateInformation {
+    int32 updateType = 1;
+    google.protobuf.Timestamp activationTime = 2;
+    UpdateStatus updateStatus = 3;
+    int32 updateState = 4;
+    int32 source = 5;
+}
+
+message ContentInstallInfo {
+    string offerId = 1;
+    string softwareId = 2;
+    string baseSlug = 3;
+    
+    ContentInstallState detailedState = 5;
+    message ContentInstallState {
+        int32 installStatus = 1;
+        int32 previousInstallStatus = 2;
+        uint32 installPhase = 3;
+        int32 modifyType = 6;
+    }
+    
+    string installCheck = 8;
+    string executableCheck = 9;
+    string baseInstallPath = 10;
+    string dlcSubPath = 11;
+    string installedVersion = 12;
+    string installedLocale = 13;
+    
+    LocalInstallProperties localInstallProperties = 14;
+    message LocalInstallProperties {
+        string localManifestVersion = 1;
+        repeated Launcher launchers = 2;
+        bool useGameVersionFromManifest = 3;
+        string supportedLocales = 4;
+    }
+    
+    LocalUninstallProperties localUninstallProperties = 15;
+    message LocalUninstallProperties {
+        string uninstallCommand = 1;
+        string uninstallParameters = 2;
+    }
+    
+    string executablePath = 17;
+    repeated string dependentSoftwares = 18;
+    
+    message Launcher {
+        string exePath = 1;
+        string cmdArgs = 2;
+        bool isTimedTrial = 3;
+        bool requires64BitOs = 4;
+        bool executeElevated = 5;
+        bool hidden = 6;
+        string contentId = 7;
+    }
+}
+
+message CatalogIds {
+    string offerId = 1;
+    string softwareId = 2;
+    string contentId = 3;
+    string masterTitleId = 4;
+    string multiplayerId = 5;
+    string slug = 6;
+    string achievementSetId = 7;
+    repeated string masterTitleIds = 8;
+    string baseGameSlug = 9;
+}
+
+message BuildMetadata {
+    string version = 1;
+    uint64 releaseDate = 2;
+    bool isIgoEnabled = 3;
+    bool enableDifferentialUpdate = 4;
+    bool treatUpdatesAsMandatory = 5;
+    bool valid = 6;
+    bool enableVersionUpdate = 7;
+}
+
+message CatalogDefinition {
+    repeated string supportedLocales = 1;
+    uint32 itemSubType = 2;
+    string projectNumber = 3;
+    uint32 minAge = 4;
+    bool isIgoApiEnabled = 5;
+    string igoBrowserDefaultUrl = 6;
+    string gameLauncherUrl = 7;
+    string gameLauncherUrlClientId = 8;
+    string displayName = 9;
+    string defaultInstallFolder = 10;
+    string dipManifestRelativePath = 11;
+    uint64 releaseDate = 12;
+    bool isBaseGame = 17;
+    bool isPDLC = 18;
+    bool isPULC = 19;
+    bool isFreeTrial = 20;
+    int32 editionRank = 23;
+    bool isCloudSaveSupported = 24;
+    string saveFileCriteria = 25;
+    string executePathOverride = 27;
+    string installCheck = 28;
+    string executeParameters = 30;
+    bool monitorPlay = 31;
+    bool isTimedTrial = 32;
+    uint32 packageType = 33;
+    uint64 downloadStartDate = 34;
+    uint64 useEndDate = 35;
+    uint64 subscriptionUnlockDate = 36;
+    uint64 subscriptionUseEndDate = 37;
+    BuildMetadata liveBuildMetadata = 38;
+    BuildMetadata stagedBuildMetadata = 39;
+    bool greyMarketControls = 41;
+    string unmaskedDisplayName = 42;
+}
+
+message AnyCatalogId {
+    int32 type = 1;
+    string value = 2;
+}
+
+message OfferKey {
+    string offerId = 1;
+    uint32 externalType = 2;
+}
+
+message NucleusEntitlement {
+    uint32 subscriptionStatusReason = 1;
+    uint32 permission = 3;
+    uint64 entId = 4;
+    string entTag = 5;
+    uint64 terminationDate = 6;
+    string serialKey = 7;
+    int64 trialTimeRemainingSeconds = 8;
+    bool isPreOrder = 9;
+    bool isEntitledFromSubscription = 10;
+    uint32 externalType = 11;
+    uint32 entitlementSource = 12;
+}
+
+message Entitlement {
+    CatalogIds catalogIds = 1;
+    CatalogDefinition catalogDef = 2;
+    NucleusEntitlement nucleusEntitlement = 3;
+    repeated string parentEntitlements = 5;
+    repeated string childEntitlements = 6;
+}
+
+message GameStatusInfo {
+    ContentInstallInfo contentInstallInfo = 1;
+    Entitlement entitlement = 2;
+    bool isGameRunning = 3;
+    BuildMetadata liveMetadata = 4;
+}
+
+message AuthInfo {
+    bool authenticated = 1;
+    bool isInvisible = 2;
+    string accessToken = 3;
+    string authCode = 4;
+    string sessionId = 5;
+    uint64 expiresInMs = 7;
+    uint64 systemTime = 8;
+    uint64 trustedTime = 9;
+    uint64 expiresAtTime = 10;
+}
+
+message PersonaeInfo {
+    string eaPersonaId = 2;
+    string correlationId = 3;
+    uint32 subscriptionStatus = 4;
+    uint32 subscriptionLevel = 5;
+    uint64 subscriptionEndTime = 6;
+    string geoCountry = 7;
+    uint32 reason = 8;
+    string userId = 9;
+}
+
+message GameRunStatus {
+    string masterTitleId = 1;
+    OfferKey offerKey = 2;
+    uint32 gameRunState = 3;
+    string slug = 4;
+    uint32 gameErrorCode = 5;
+    uint32 processId = 6;
+    uint32 threadId = 7;
+    int32 exitCode = 8;
+}
+
+message GepGameEnvironmentData {
+    string nucleusToken = 1;
+    string authCode = 2;
+    string serialKey = 3;
+    string rtpCode = 4;
+    string sessionKey = 5;
+    string gameLocale = 6;
+    string environment = 7;
+    string eaId = 8;
+    string contentId = 9;
+    OfferKey offerKey = 10;
+    bool freeTrial = 11;
+    bool offlineMode = 12;
+    bool requireAllowVms = 13;
+    string igoLogDirPath = 14;
+    string igoCacheDirPath = 15;
+    string gameSessionId = 16;
+    uint32 lsxPort = 17;
+    string steamAppId = 18;
+    uint32 steamProxyIpcPort = 19;
+    uint32 egsProxyIpcPort = 20;
+}
+
+message ClientAutoUpdateValuesUpdatedReq {
+    bool automaticClientUpdatesEnabled = 1;
+}
+
+message ClientAutoUpdateValuesUpdatedResp {
+    
+}
+
+message CrashBgsReq {
+    
+}
+
+message CrashBgsResp {
+    
+}
+
+message CheckClientRunningReq {
+    bool rtpLaunchPending = 1;
+}
+
+message CheckClientRunningResp {
+    bool running = 1;
+}
+
+message CheckAuthViewVisibilityReq {
+    
+}
+
+message CheckAuthViewVisibilityResp {
+    
+}
+
+message CheckUpdateInformationReq {
+    bool wakeFromIdle = 1;
+}
+
+message CheckUpdateInformationResp {
+    UpdateInformation updateInfo = 1;
+}
+
+message CheckVersionReq {
+    
+}
+
+message CheckVersionResp {
+    string version = 1;
+    string location = 2;
+    string environment = 3;
+}
+
+message NotifyProcessIdReq {
+    uint32 processId = 1;
+}
+
+message NotifyProcessIdResp {
+    
+}
+
+message NotifyLsxPortReq {
+    uint32 lsxPort = 1;
+}
+
+message NotifyLsxPortResp {
+    
+}
+
+message AcceptUpdateReq {
+    
+}
+
+message AcceptUpdateResp {
+    
+}
+
+message PauseUpdateReq {
+    
+}
+
+message PauseUpdateResp {
+    
+}
+
+message BeginUpdateReq {
+    
+}
+
+message BeginUpdateResp {
+    int32 result = 1;
+}
+
+message SimulateNoNetworkReq {
+    bool disableNetwork = 1;
+}
+
+message SimulateNoNetworkResp {
+    
+}
+
+message ManualOfflineStatusChangedReq {
+    bool goOffline = 1;
+}
+
+message ManualOfflineStatusChangedResp {
+    
+}
+
+message RefreshAuthNotif {
+    
+}
+
+message InstallConfigUpdatedReq {
+    bool automaticContentUpdates = 1;
+    bool continuedContentInstalls = 2;
+    int64 throttleBandwidthKbPerSecond = 3;
+    bool pauseDownloadsWhenInGame = 4;
+}
+
+message InstallConfigUpdatedResp {
+    
+}
+
+message GetCatalogStoreReq {
+    
+}
+
+message GetCatalogStoreResp {
+    
+}
+
+message CatalogUpdatedNotif {
+    string serializedContent = 1;
+}
+
+message RefreshInstallStateReq {
+    repeated string softwareIds = 1;
+}
+
+message RefreshInstallStateResp {
+    
+}
+
+message RefreshInstallStateCompletedNotif {
+    repeated string softwareIds = 1;
+    bool installStateChanged = 2;
+}
+
+message InstallContentReq {
+    string data = 10;
+}
+
+message InstallContentResp {
+    
+}
+
+message RefreshInstallLocaleReq {
+    repeated string softwareIds = 1;
+}
+
+message RefreshInstallLocaleResp {
+    
+}
+
+message ContentControlReq {
+    uint32 contentControlType = 1;
+    repeated string offerIds = 2;
+    string slug = 3;
+}
+
+message ContentControlResp {
+    
+}
+
+message ContentUninstallReq {
+    string slug = 1;
+    string offerId = 2;
+    bool silent = 3;
+    RequestData requestData = 4;
+    bool skipgameisrunningcheck = 5;
+}
+
+message ContentUninstallResp {
+    
+}
+
+message DetectedBundle {
+    string softwareId = 1;
+    string path = 2;
+}
+
+message BGSBundleInfo {
+    string softwareId = 1;
+    string installCheck = 2;
+    string bundlePath = 3;
+}
+
+message DetectBundlesReq {
+    repeated BGSBundleInfo bundles = 1;
+}
+
+message DetectBundlesResp {
+    
+}
+
+message VerifyDetectedBundlesReq {
+    repeated DetectedBundle detectedBundles = 1;
+}
+
+message VerifyDetectedBundlesResp {
+    
+}
+
+message UpdateContentReq {
+    string data = 5;
+}
+
+message UpdateContentResp {
+    
+}
+
+message RepairContentReq {
+    string data = 4;
+}
+
+message RepairContentResp {
+    
+}
+
+message LanguageChangeReq {
+    string data = 1;
+}
+
+message LanguageChangeResp {
+    
+}
+
+message CheckGameInstalledReq {
+    string offerId = 1;
+}
+
+message CheckGameInstalledResp {
+    
+}
+
+message ReloadEntitlementsReq {
+    uint32 trigger = 1;
+    bool forceRefreshExternalEntitlements = 2;
+    string contentId = 3;
+}
+
+message ReloadEntitlementsResp {
+    
+}
+
+message GetInstallQueueReq {
+    
+}
+
+message GetInstallQueueResp {
+    
+}
+
+message TrialTimeUpdatedReq {
+    OfferKey offerKey = 1;
+    string contentId = 2;
+    int64 remainingMinutes = 3;
+    bool gameExited = 4;
+}
+
+message TrialTimeUpdatedResp {
+    
+}
+
+message NotifyGameRunStatusReq {
+    GameRunStatus gameRunStatus = 1;
+}
+
+message NotifyGameRunStatusResp {
+    
+}
+
+message NotifyChangeSplashVisibilityReq {
+    uint32 type = 1;
+    uint32 reason = 2;
+}
+
+message NotifyChangeSplashVisibilityResp {
+    
+}
+
+message LaunchElevatedGameReq {
+    string masterTitleId = 1;
+    OfferKey offerKey = 2;
+    string workingDirectory = 3;
+    GepGameEnvironmentData gameEnvironmentData = 4;
+    string cmdParams = 5;
+}
+
+message LaunchElevatedGameResp {
+    string masterTitleId = 1;
+    uint64 token = 2;
+    int32 gameErrorCode = 3;
+}
+
+message ResumeElevatedGameReq {
+    uint64 token = 1;
+}
+
+message ResumeElevatedGameResp {
+    
+}
+
+message ElevatedLaunchInfoReq {
+    uint32 port = 1;
+}
+
+message ElevatedLaunchInfoResp {
+    string contentId = 1;
+    OfferKey offerKey = 2;
+    string masterTitleId = 3;
+    string execPath = 4;
+    string cmdArgs = 5;
+    uint64 token = 6;
+    bool igoInjectionRequired = 7;
+}
+
+message GameStatusInfoReq {
+    string masterTitleId = 1;
+    repeated string offerIds = 2;
+}
+
+message GameStatusInfoResp {
+    repeated GameStatusInfo statusInfos = 1;
+}
+
+message SpaNavigationReq {
+    uint32 destination = 1;
+}
+
+message SpaNavigationResp {
+    
+}
+
+message GepReadyNotif {
+    uint64 token = 1;
+    string masterTitleId = 2;
+    uint32 port = 3;
+    uint32 gameErrorCode = 4;
+}
+
+message ContentReadyNotif {
+    
+}
+
+message ContentUpdatedNotif {
+    uint32 partIndex = 1;
+    uint32 contentLength = 2;
+    repeated OfferKey offerKeys = 3;
+    string serializedContent = 4;
+}
+
+message InstallUpdatedNotif {
+    repeated OfferKey offerKeys = 1;
+    repeated ContentInstallInfo installInfos = 2;
+    repeated string softwareIds = 3;
+}
+
+message BaseGameUpdatedNotif {
+    repeated ContentInstallInfo installInfos = 1;
+}
+
+message GameStartedSuspendedNotif {
+    GameRunStatus gameRunStatus = 3;
+}
+
+message GameResumedNotif {
+    GameRunStatus gameRunStatus = 1;
+}
+
+message GameRunStatusNotif {
+    GameRunStatus gameRunStatus = 1;
+}
+
+message ChangeSplashVisibilityNotif {
+    uint32 type = 1;
+    uint32 reason = 2;
+}
+
+message InstallQueueUpdatedNotif {
+    string data = 2;
+}
+
+message UpdaterDownloadProgNotif {
+    int64 bytesReceived = 1;
+    int64 bytesTotal = 2;
+}
+
+message UpdaterStepCompleteNotif {
+    int32 step = 1;
+    UpdateStatus updateStatus = 2;
+}
+
+message UpdateNotif {
+    UpdateInformation updateInfo = 1;
+}
+
+message ModifyContentProgressNotif {
+    string offerId = 1;
+    string slug = 2;
+    uint64 numerator = 5;
+    uint64 denominator = 6;
+    float bandwidthBps = 7;
+    int32 step = 9;
+}
+
+message InsertDiskNotif {
+    string offerId = 1;
+    string slug = 2;
+    uint32 diskNo = 3;
+}
+
+message TelemetryEventNotif {
+    string data = 9;
+}
+
+message DownloadStatusNotif {
+    repeated DownloadStatusInfo downloadStatus = 1;
+    message DownloadStatusInfo {
+        string offerId = 1;
+        string slug = 2;
+        int32 downloadStatus = 3;
+    }
+}
+
+message DownloadStateCleanedNotif {
+    string offerId = 1;
+}
+
+message InstallCompletedNotif {
+    string offerId = 1;
+    bool groupFinished = 2;
+    bool groupHasBaseGame = 3;
+    bool shouldLaunchGame = 4;
+}
+
+message ModifyContentErrorData {
+    bool readAccess = 4;
+    bool writeAccess = 5;
+    bool executeAccess = 6;
+    
+    oneof errorData {
+        DiskFull diskFull = 1;
+        SharingViolation sharingViolation = 2;
+        WrongDiskInserted wrongDiskInserted = 3;
+    }
+    
+    message DiskFull {
+        uint64 diskSpaceRequired = 1;
+        uint64 diskSpaceAvailable = 2;
+        uint64 diskSpaceAllocated = 3;
+        string driveLetter = 4;
+        bool isInplaceUpdate = 5;
+    }
+    
+    message SharingViolation {
+        string lockingProcess = 1;
+    }
+    
+    message WrongDiskInserted {
+        uint32 expectingDiskNo = 1;
+    }
+}
+
+message InstallErrorOccurredNotif {
+    OfferKey offerKey = 1;
+    string slug = 2;
+    uint32 errorCategory = 3;
+    uint32 errorCode = 4;
+    string extraContext = 5;
+    string errorDetail = 6;
+    ModifyContentErrorData errorData = 7;
+}
+
+message GeneralErrorMessageNotif {
+    string errorMsg = 1;
+}
+
+message ShowErrorDialogNotif {
+    uint32 errorCode = 1;
+    string additionalContexts = 2;
+}
+
+message ClearInstallFinishListReq {
+    
+}
+
+message ClearInstallFinishListResp {
+    
+}
+
+message FocusMainWindowNotif {
+    
+}
+
+message CheckAuthViewVisibilityNotif {
+    
+}
+
+message InstallQueueReadinessNotif {
+    bool ready = 1;
+}
+
+message AuthInfoUpdateNotif {
+    AuthInfo authInfo = 1;
+}
+
+message InstallStatusInfoReq {
+    
+}
+
+message InstallStatusInfoResp {
+    repeated ContentInstallInfo installInfos = 1;
+    
+    repeated CatalogInfo catalogInfos = 2;
+    message CatalogInfo {
+        string softwareId = 1;
+        CatalogDefinition catalogDef = 2;
+    }
+}
+
+message ExternalUserInfo {
+    string authCode = 1;
+    string idToken = 2;
+    string userId = 3;
+    bool shouldRefreshSPA = 4;
+}
+
+message GameInvite {
+    string payload = 1;
+    uint64 fromUserId = 2;
+    bool initial = 3;
+}
+
+message ExternalAction {
+    uint32 type = 1;
+    ExternalUserInfo userInfo = 2;
+    OfferKey offerKey = 4;
+    string slug = 5;
+    RequestData requestData = 6;
+    string cmdParams = 7;
+    string launchHelperArgument = 8;
+    string externalAppId = 9;
+    repeated AnyCatalogId anyCatalogIds = 11;
+    string platformType = 12;
+    string trackingId = 13;
+    string cookieToInject = 14;
+    string clientPage = 15;
+    GameInvite gameInvite = 16;
+    uint32 externalLauncherIpcPort = 17;
+}
+
+message PushExternalActionReq {
+    ExternalAction externalAction = 1;
+}
+
+message PushExternalActionResp {
+    
+}
+
+message PopExternalActionReq {
+    
+}
+
+message PopExternalActionResp {
+    repeated ExternalAction externalActions = 1;
+}
+
+message ExternalActionNotif {
+    
+}
+
+message CancelInstallGameReq {
+    string slug = 1;
+    ExternalUserInfo userInfo = 2;
+    RequestData requestData = 3;
+}
+
+message CancelInstallGameResp {
+    
+}
+
+message InstallGameReq {
+    ExternalUserInfo userInfo = 1;
+    string gameSlug = 2;
+    RequestData requestData = 3;
+}
+
+message InstallGameResp {
+    
+}
+
+message PauseInstallGameReq {
+    string slug = 1;
+    ExternalUserInfo userInfo = 2;
+    RequestData requestData = 3;
+}
+
+message PauseInstallGameResp {
+    
+}
+
+message ResumeInstallGameReq {
+    string slug = 1;
+    ExternalUserInfo userInfo = 2;
+    RequestData requestData = 3;
+}
+
+message ResumeInstallGameResp {
+    
+}
+
+message UninstallGameReq {
+    ExternalUserInfo userInfo = 1;
+    string slug = 2;
+    RequestData requestData = 3;
+}
+
+message UninstallGameResp {
+    
+}
+
+message RequestData {
+    uint32 requestSource = 1;
+    uint32 requestOwner = 2;
+    int64 param1 = 3;
+    string param2 = 4;
+    uint64 requestTimestamp = 5;
+}
+
+message LaunchGameReq {
+    ExternalUserInfo userInfo = 1;
+    OfferKey offerKey = 2;
+    RequestData requestData = 3;
+    string cmdParams = 4;
+    string slug = 5;
+    string offerId = 6;
+    string launchHelperArgument = 7;
+}
+
+message LaunchGameResp {
+    bool requestAccepted = 1;
+}
+
+message LaunchClientReq {
+    ExternalUserInfo userInfo = 1;
+    string slug = 2;
+    RequestData requestData = 3;
+}
+
+message LaunchClientResp {
+    
+}
+
+message ContentUninstallStatusNotif {
+    string offerId = 1;
+    uint32 uninstallState = 2;
+}
+
+message ContentUninstallStatusNotifResp {
+    
+}
+
+message GrantAchievementNotif {
+    string achievementId = 1;
+    uint32 progress = 2;
+}
+
+message GetUserAchievementsReq {
+    string offerId = 1;
+}
+
+message GetUserAchievementsResp {
+    repeated GrantAchievementNotif achievements = 1;
+}
+
+message GetEpicAccessTokenReq {
+    
+}
+
+message GetEpicAccessTokenResp {
+    string accessToken = 1;
+    uint64 expiresAtS = 2;
+}
+
+message SteamOverlayToStoreNotif {
+    string appId = 1;
+    string offerId = 2;
+    bool isBaseGame = 3;
+    uint32 flag = 4;
+}
+
+message SteamPurchaseConfirmationReq {
+    uint64 orderId = 1;
+    bool isAuthorized = 2;
+}
+
+message SteamPurchaseConfirmationResp {
+    
+}
+
+message SetSteamLocaleReq {
+    string locale = 1;
+}
+
+message SetSteamLocaleResp {
+    
+}
+
+message NotifySteamOverlayStateReq {
+    bool isActive = 1;
+}
+
+message NotifySteamOverlayStateResp {
+    
+}
+
+message StartCloudSyncReq {
+    OfferKey offerKey = 1;
+    uint32 syncType = 2;
+    uint32 requestOwner = 3;
+}
+
+message StartCloudSyncResp {
+    string offerId = 1;
+    bool success = 2;
+}
+
+message RestorePrivilegedBackupReq {
+    string offerId = 1;
+    string entitlementId = 3;
+    string userId = 4;
+}
+
+message RestorePrivilegedBackupResp {
+    string offerId = 1;
+    bool isRestoreStarted = 2;
+}
+
+message PrivilegedBackupRestoredNotif {
+    string offerId = 1;
+    int32 result = 2;
+}
+
+message CloudSyncStatusNotif {
+    string cloudId = 1;
+    uint32 syncStatus = 2;
+    uint64 localDataTimestamp = 3;
+    uint64 remoteDataTimestamp = 4;
+}
+
+message ResolveCloudSyncConflictReq {
+    string cloudId = 1;
+    uint32 resolution = 2;
+}
+
+message ResolveCloudSyncConflictResp {
+    
+}
+
+message GameLaunchPending {
+    string gameLaunchArgument = 1;
+    RequestData requestData = 2;
+}
+
+message GameLaunchPendingResp {
+    
+}
+
+message Link2EAReq {
+    ExternalUserInfo userInfo = 1;
+    string externalAppId = 2;
+    RequestData requestData = 3;
+    string cmdParams = 4;
+    string launchHelperArgument = 5;
+    string platformType = 6;
+    GameInvite gameInvite = 7;
+    string cookieToInject = 8;
+    uint32 externalLauncherIpcPort = 9;
+}
+
+message Link2EAResp {
+    
+}
+
+message Link2EAPendingRequest {
+    string launchHelperArgument = 1;
+}
+
+message Link2EAPendingRequestResp {
+    
+}
+
+message ClearLink2EAPendingRequest {
+    bool requestCameFromLink2Ea = 1;
+}
+
+message ClearLink2EAPendingRequestResp {
+    
+}
+
+message ClearLink2EAPendingNotif {
+    
+}
+
+message ProfilerControlReq {
+    bool setActive = 1;
+}
+
+message ProfilerControlResp {
+    
+}
+
+message RefreshExtEntitlementsNotif {
+    string responseBody = 1;
+    uint32 responseStatus = 2;
+    int32 entitlementLoadTrigger = 3;
+}
+
+message LoadEntitlementsFailedNotif {
+    int32 errorCategory = 1;
+    int32 entitlementLoadTrigger = 2;
+}
+
+message LaunchAppReq {
+    int32 appId = 1;
+    repeated string cmdArgs = 2;
+}
+
+message LaunchAppResp {
+    
+}
+
+message CheckBgsFileAccessReq {
+    string fileName = 1;
+}
+
+message CheckBgsFileAccessResp {
+    bool hasAccess = 1;
+}
+
+message ShutdownBgsReq {
+    
+}
+
+message ChangeComServerStatusReq {
+    uint32 status = 1;
+}

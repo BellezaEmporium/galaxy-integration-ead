@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package eax.services.ipc;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/empty.proto";
+
+service GrpcServer {
+    rpc CreateRequest(Request) returns (Response);
+    rpc GetSubscriptions(google.protobuf.Empty) returns (GetSubscriptionsResp);
+    rpc SubscribeEvent(StreamMessage) returns (stream StreamMessage);
+}
+
+message Request {
+    google.protobuf.Any requestData = 1;
+}
+
+message Response {
+    google.protobuf.Any responseData = 1;
+}
+
+message StreamMessage {
+    google.protobuf.Any streamData = 1;
+}
+
+message BinaryMessage {
+    bytes messageData = 1;
+}
+
+message SubscriptionInfo {
+    string url = 1;
+}
+
+message GetSubscriptionsResp {
+    repeated SubscriptionInfo infos = 1;
+}

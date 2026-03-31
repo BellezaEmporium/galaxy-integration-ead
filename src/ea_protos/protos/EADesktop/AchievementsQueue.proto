@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package eax.protobuf;
+
+message AchievementGrantRecord {
+    string offerId = 1;
+    string sdkVersion = 2;
+    string personaId = 3;
+    string appId = 4;
+    string setId = 5;
+    string id = 6;
+    string code = 7;
+    int32 progress = 8;
+    AchievementStatus achievementStatus = 9;
+}
+
+message AchievementsGrantQueue {
+    repeated AchievementGrantRecord achievements = 1;
+    uint32 schemaVersion = 2;
+}
+
+enum AchievementStatus {
+    Unknown = 0;
+    Progress = 1;
+    PreviouslyCompleted = 2;
+    Completed = 3;
+}

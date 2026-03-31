@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package eax.connect;
+
+service ContentControlService {
+    rpc AccountLink(AccountLinkRequest) returns (AccountLinkReply);
+    rpc Install(InstallRequest) returns (InstallReply);
+    rpc Uninstall(UninstallRequest) returns (UninstallReply);
+    rpc PauseInstall(PauseInstallRequest) returns (PauseInstallReply);
+    rpc ResumeInstall(ResumeInstallRequest) returns (ResumeInstallReply);
+    rpc CancelInstall(CancelInstallRequest) returns (CancelInstallReply);
+    rpc Launch(LaunchRequest) returns (LaunchReply);
+    rpc GetStatus(GetStatusRequest) returns (GetStatusReply);
+    rpc MonitorStatus(MonitorStatusRequest) returns (stream ContentStatus);
+    rpc OpenDesktop(OpenDesktopRequest) returns (OpenDesktopReply);
+    rpc NavigateProductDetails(NavigateProductDetailsRequest) returns (NavigateProductDetailsReply);
+    rpc HangUp(HangUpRequest) returns (HangUpReply);
+    rpc Echo(EchoRequest) returns (EchoReply);
+}
+
+message Status {
+    int32 code = 1;
+    string message = 2;
+}
+
+message AuthInfo {
+    string token = 1;
+}
+
+message ContentStatus {
+    string content_id = 1;
+    ContentState state = 2;
+    ContentState prev_state = 3;
+    TransitionCode transition_code = 4;
+    int64 progress_numerator = 5;
+    int64 progress_denominator = 6;
+    ProgressUnit progress_unit = 7;
+    string slug = 11;
+    float bandwidthBps = 12;
+    uint64 lastPlayedDateTime = 13;
+    string baseInstallPath = 14;
+    string installedVersion = 15;
+}
+
+message AccountLinkRequest {
+    AuthInfo auth = 1;
+    bool silent = 2;
+}
+
+message AccountLinkReply {
+    Status status = 1;
+}
+
+message InstallRequest {
+    AuthInfo auth = 1;
+    string content_id = 2;
+}
+
+message InstallReply {
+    Status status = 1;
+}
+
+message UninstallRequest {
+    AuthInfo auth = 1;
+    string content_id = 2;
+}
+
+message UninstallReply {
+    Status status = 1;
+}
+
+message PauseInstallRequest {
+    string content_id = 1;
+    AuthInfo auth = 2;
+}
+
+message PauseInstallReply {
+    Status status = 1;
+}
+
+message ResumeInstallRequest {
+    string content_id = 1;
+    AuthInfo auth = 2;
+}
+
+message ResumeInstallReply {
+    Status status = 1;
+}
+
+message CancelInstallRequest {
+    string content_id = 1;
+    AuthInfo auth = 2;
+}
+
+message CancelInstallReply {
+    Status status = 1;
+}
+
+message LaunchRequest {
+    AuthInfo auth = 1;
+    string content_id = 2;
+    repeated string cmd_params = 3;
+}
+
+message LaunchReply {
+    Status status = 1;
+}
+
+message GetStatusRequest {
+    repeated string content_id = 1;
+}
+
+message GetStatusReply {
+    repeated ContentStatus content_info = 1;
+    Status status = 2;
+}
+
+message MonitorStatusRequest {
+    repeated string content_id = 2;
+    Status status = 3;
+}
+
+message OpenDesktopRequest {
+    AuthInfo auth = 1;
+    string content_id = 2;
+}
+
+message OpenDesktopReply {
+    Status status = 1;
+}
+
+message NavigateProductDetailsRequest {
+    AuthInfo auth = 1;
+    string content_id = 2;
+}
+
+message NavigateProductDetailsReply {
+    Status status = 1;
+}
+
+message HangUpRequest {
+    
+}
+
+message HangUpReply {
+    Status status = 1;
+}
+
+message EchoRequest {
+    string message = 1;
+}
+
+message EchoReply {
+    Status status = 1;
+    string message = 2;
+}
+
+enum ContentState {
+    STATE_UNKNOWN = 0;
+    STATE_NOT_INSTALLED = 1;
+    STATE_PENDING_EULA = 2;
+    STATE_INSTALL_QUEUED = 3;
+    STATE_INSTALL_ACTIVE = 4;
+    STATE_INSTALL_PAUSED = 5;
+    STATE_INSTALL_CANCELLING = 6;
+    STATE_INSTALL_FINALIZING = 7;
+    STATE_PATCH_PENDING_MANDATORY = 8;
+    STATE_PATCH_PENDING_OPTIONAL = 9;
+    STATE_READY = 10;
+    STATE_LAUNCHING = 11;
+    STATE_PLAYING = 12;
+    STATE_REPAIRING = 13;
+    STATE_MOVING = 14;
+    STATE_UNINSTALLING = 15;
+}
+
+enum TransitionCode {
+    TRANSITION_NORMAL = 0;
+    TRANSITION_CANCELLED = 1;
+    TRANSITION_ERROR_OCCURRED = 2;
+}
+
+enum ProgressUnit {
+    UNIT_BYTES = 0;
+    UNIT_FILES = 1;
+    UNIT_STEPS = 2;
+    UNIT_SECONDS = 3;
+}
+
+enum ResultCode {
+    OK = 0;
+    OK_ALREADY_IN_PROGRESS = 1001;
+    OK_ALREADY_COMPLETED = 1002;
+    ERROR_UNKNOWN = -1000;
+    ERROR_BACKGROUND_SERVICE_NOT_RUNNING = -1001;
+    ERROR_ONLINE_SERVICES_UNAVAILABLE = -1002;
+    ERROR_ONLINE_SERVICES_ERROR = -1003;
+    ERROR_CANCELLED_BY_USER = -1004;
+    ERROR_UNRECOGNIZED_CONTENT_ID = -1005;
+    ERROR_INCOMPATIBLE_STATE = -1006;
+    ERROR_INVALID_ARGUMENT = -1007;
+    ERROR_ACCOUNT_NOT_LINKED = -1008;
+    ERROR_NOT_IMPLEMENTED = -1009;
+}
+
+enum LinkStatus {
+    LINK_SUCCESS = 0;
+    TOKEN_REFRESHED = 1;
+}
+
+enum LaunchStatus {
+    LAUNCH_OK = 0;
+    ERROR_CONTENT_CONFLICT = -1;
+}
