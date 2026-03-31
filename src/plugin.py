@@ -939,7 +939,6 @@ class EAPlugin(Plugin):
     async def _try_grpc_reflection_call(self, access_token: str, user_id: str, user_presence: UserPresence) -> bool:
         """Attempt to use gRPC reflection to discover the API"""
         try:
-            # Essai d'import optionnel des modules gRPC reflection
             try:
                 from grpc_reflection.v1alpha import reflection_pb2
                 from grpc_reflection.v1alpha import reflection_pb2_grpc
@@ -948,7 +947,6 @@ class EAPlugin(Plugin):
                 logger.info("grpcio-reflection not available, trying basic gRPC call")
                 return await self._try_basic_grpc_call(access_token, user_id, user_presence)
                 
-            # Si les modules sont disponibles, essayer la reflection
             credentials = grpc.ssl_channel_credentials()
             channel = grpc.aio.secure_channel('api.k.social.ea.com:443', credentials)
             
