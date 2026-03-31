@@ -775,6 +775,7 @@ message ExternalAction {
     string cookieToInject = 14;
     string clientPage = 15;
     GameInvite gameInvite = 16;
+    uint32 externalLauncherIpcPort = 17;
 }
 
 message PushExternalActionReq {
@@ -1003,6 +1004,7 @@ message Link2EAReq {
     string platformType = 6;
     GameInvite gameInvite = 7;
     string cookieToInject = 8;
+    uint32 externalLauncherIpcPort = 9;
 }
 
 message Link2EAResp {
