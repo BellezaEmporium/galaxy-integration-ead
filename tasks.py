@@ -2,6 +2,8 @@ import os
 import sys
 import json
 import tempfile
+import requests
+import io
 from shutil import rmtree, which
 from distutils.dir_util import copy_tree
 
@@ -9,6 +11,7 @@ from invoke.tasks import task
 from galaxy.tools import zip_folder_to_file
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+PROTOS_URL = "https://github.com/BellezaEmporium/EA-Protobuffers/archive/refs/heads/feat/updater.zip"
 
 with open(os.path.join(BASE_DIR, "src", "manifest.json"), "r") as f:
     MANIFEST = json.load(f)
@@ -81,6 +84,54 @@ def pack(c):
 
 
 @task
+def download_protos(c):
+    """Download the latest protobuf files from the remote repository."""
+    file = io.BytesIO()
+    print(f"Downloading protos from {PROTOS_URL}...")
+    try:
+        response = requests.get(PROTOS_URL)
+        response.raise_for_status()
+        file.write(response.content)
+        file.seek(0)
+        print("Download complete.")
+    except requests.RequestException as e:
+        print(f"Failed to download protos: {e}")
+        return
+    
+    import zipfile
+    with zipfile.ZipFile(file) as z:
+        # find the root folder in the zip (there should be only one)
+        root_folder = None
+        for name in z.namelist():
+            if name.endswith('/') and not root_folder:
+                root_folder = name
+                break
+        
+        if not root_folder:
+            print("Could not find root folder in the zip file.")
+            return
+        
+        # extract the zip file to a temporary directory
+        with tempfile.TemporaryDirectory() as tmpdir:
+            z.extractall(tmpdir)
+            extracted_protos_path = os.path.join(tmpdir, root_folder, "protos")
+            
+            if not os.path.isdir(extracted_protos_path):
+                print("Could not find proto folder in the extracted files.")
+                return
+            
+            target_protos_path = os.path.join(BASE_DIR, "src", "ea_protos")
+            
+            # remove existing protos if they exist
+            if os.path.exists(target_protos_path):
+                rmtree(target_protos_path)
+            
+            # move the new protos to the target location
+            copy_tree(extracted_protos_path, target_protos_path)
+            print(f"Protobuf files have been updated in {target_protos_path}.")
+        
+
+@task
 def generate_protos(c, files=None, all=False):
     """Generate Python protobuf modules from .proto files in src/ea_protos.
 
@@ -104,7 +155,16 @@ def generate_protos(c, files=None, all=False):
         if files:
             protos = [f.strip() for f in files.split(',') if f.strip()]
         else:
-            protos = ['Server.proto', 'Messages.proto']
+            # Search for Server.proto and Messages.proto in all subfolders
+            protos = []
+            target_files = {'Server.proto', 'Messages.proto'}
+            for root, dirs, filenames in os.walk(proto_root):
+                for fn in filenames:
+                    if fn in target_files:
+                        protos.append(os.path.relpath(os.path.join(root, fn), proto_root))
+            if not protos:
+                print(f"Warning: Could not find Server.proto or Messages.proto in {proto_root}")
+                return
 
     # Try to use the project's virtualenv python if present, otherwise fall back
     venv_python = None
