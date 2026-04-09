@@ -4,6 +4,8 @@ import json
 import tempfile
 import requests
 import io
+import shlex
+import subprocess
 from shutil import rmtree, which
 from distutils.dir_util import copy_tree
 
@@ -30,6 +32,49 @@ elif sys.platform == 'darwin':
     DIST_DIR = os.path.realpath(os.path.expanduser("~/Library/Application Support/GOG.com/Galaxy/plugins/installed"))
     PLATFORM = "macosx_10_13_x86_64"  # @see https://github.com/FriendsOfGalaxy/galaxy-integrations-updater/blob/master/scripts.py
     PYTHON_EXE = "python"
+
+
+def _shell_join(args):
+    if sys.platform == 'win32':
+        return subprocess.list2cmdline(args)
+    return ' '.join(shlex.quote(arg) for arg in args)
+
+
+def _resolve_python_cmd():
+    venv_env = os.environ.get('VIRTUAL_ENV')
+    if venv_env:
+        scripts_dir = 'Scripts' if sys.platform == 'win32' else 'bin'
+        python_exe = 'python.exe' if sys.platform == 'win32' else 'python'
+        return [os.path.join(venv_env, scripts_dir, python_exe)]
+
+    venv_path = os.path.join(BASE_DIR, '.venv')
+    if os.path.exists(venv_path):
+        scripts_dir = 'Scripts' if sys.platform == 'win32' else 'bin'
+        python_exe = 'python.exe' if sys.platform == 'win32' else 'python'
+        return [os.path.join(venv_path, scripts_dir, python_exe)]
+
+    python = PYTHON_EXE if 'PYTHON_EXE' in globals() and PYTHON_EXE else 'python'
+    if isinstance(python, (list, tuple)):
+        return list(python)
+    return shlex.split(python, posix=sys.platform != 'win32')
+
+
+def _ensure_generated_protos_package(generated_protos_dir):
+    for root, _, _ in os.walk(generated_protos_dir):
+        init_path = os.path.join(root, '__init__.py')
+        if os.path.exists(init_path):
+            continue
+
+        with open(init_path, 'w', encoding='utf-8', newline='\n') as init_file:
+            if root == generated_protos_dir:
+                init_file.write(
+                    '"""Generated protobuf modules."""\n'
+                    'import os\n'
+                    'import sys\n\n'
+                    '_PACKAGE_DIR = os.path.dirname(__file__)\n'
+                    'if _PACKAGE_DIR not in sys.path:\n'
+                    '    sys.path.insert(0, _PACKAGE_DIR)\n'
+                )
 
 
 @task
@@ -137,7 +182,7 @@ def generate_protos(c, files=None, all=False):
 
     Usage:
       invoke generate_protos
-      invoke generate_protos --files="Server.proto,Messages.proto"
+      invoke generate_protos --files="EADesktop/Server.proto,Link2EA/Messages.proto"
       invoke generate_protos --all
     """
     proto_root = os.path.join(BASE_DIR, 'src', 'ea_protos')
@@ -145,43 +190,24 @@ def generate_protos(c, files=None, all=False):
         print(f"Proto root not found: {proto_root}")
         return
 
-    if all:
+    if files and not all:
+        protos = sorted({f.strip() for f in files.split(',') if f.strip()})
+    else:
         protos = []
         for root, dirs, filenames in os.walk(proto_root):
             for fn in filenames:
                 if fn.endswith('.proto'):
                     protos.append(os.path.relpath(os.path.join(root, fn), proto_root))
-    else:
-        if files:
-            protos = [f.strip() for f in files.split(',') if f.strip()]
-        else:
-            # Search for Server.proto and Messages.proto in all subfolders
-            protos = []
-            target_files = {'Server.proto', 'Messages.proto'}
-            for root, dirs, filenames in os.walk(proto_root):
-                for fn in filenames:
-                    if fn in target_files:
-                        protos.append(os.path.relpath(os.path.join(root, fn), proto_root))
-            if not protos:
-                print(f"Warning: Could not find Server.proto or Messages.proto in {proto_root}")
-                return
+        protos.sort()
 
-    # Try to use the project's virtualenv python if present, otherwise fall back
-    venv_python = None
-    venv_env = os.environ.get('VIRTUAL_ENV')
-    if venv_env:
-        venv_path = venv_env
-        scripts_dir = 'Scripts' if sys.platform == 'win32' else 'bin'
-        python_exe = 'python.exe' if sys.platform == 'win32' else 'python'
-        venv_python = os.path.join(venv_path, scripts_dir, python_exe)
-    elif os.path.exists(os.path.join(BASE_DIR, '.venv')):
-        scripts_dir = 'Scripts' if sys.platform == 'win32' else 'bin'
-        python_exe = 'python.exe' if sys.platform == 'win32' else 'python'
-        venv_python = os.path.join(BASE_DIR, '.venv', scripts_dir, python_exe)
-    python = venv_python or (PYTHON_EXE if 'PYTHON_EXE' in globals() and PYTHON_EXE else 'python')
+    if not protos:
+        print(f"Warning: Could not find any .proto files in {proto_root}")
+        return
+
+    python_cmd = _resolve_python_cmd()
 
     # Ensure grpc_tools is available
-    check_cmd = f'"{python}" -c "import grpc_tools.protoc; print(1)"'
+    check_cmd = _shell_join(python_cmd + ['-c', 'import grpc_tools.protoc; print(1)'])
     try:
         # Use warn=True to catch the return without raising
         res = c.run(check_cmd, hide='both', warn=True)
@@ -192,8 +218,26 @@ def generate_protos(c, files=None, all=False):
         print('grpc_tools not installed in the selected Python environment. Install with pip install grpcio-tools')
         return
 
-    args = [python, '-m', 'grpc_tools.protoc', f'-I{proto_root}', f'--python_out={os.path.join(BASE_DIR, "src")}', f'--grpc_python_out={os.path.join(BASE_DIR, "src")}' ]
-    args.extend([os.path.join(proto_root, p) for p in protos])
-    cmd = ' '.join(f'"{a}"' if ' ' in a else a for a in args)
-    print('Running:', cmd)
-    c.run(cmd, echo=True, warn=True)
+    generated_protos_dir = os.path.join(BASE_DIR, "src", "generated_protos")
+    if os.path.isdir(generated_protos_dir):
+        rmtree(generated_protos_dir)
+    os.makedirs(generated_protos_dir, exist_ok=True)
+
+    for proto in protos:
+        args = python_cmd + ['-m', 'grpc_tools.protoc', f'-I{proto_root}', f'--python_out={generated_protos_dir}', f'--grpc_python_out={generated_protos_dir}', os.path.join(proto_root, proto)]
+        cmd = _shell_join(args)
+        print('Running:', cmd)
+        res = c.run(cmd, echo=True, warn=True)
+        if res.exited != 0:
+            print(f'Protobuf generation failed for {proto}.')
+            return
+
+    _ensure_generated_protos_package(generated_protos_dir)
+
+    generated_modules = 0
+    for root, _, filenames in os.walk(generated_protos_dir):
+        for fn in filenames:
+            if fn.endswith(('_pb2.py', '_pb2_grpc.py')):
+                generated_modules += 1
+
+    print(f'Generated {generated_modules} protobuf module files in {generated_protos_dir}.')
