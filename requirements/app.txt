@@ -1,4 +1,5 @@
 galaxy.plugin.api==0.69
 psutil
-grpcio==1.62.3
+protobuf==4.24.4
+grpcio==1.53.0rc2
 pyobjc-framework-CoreServices==9.2; sys_platform == 'darwin'

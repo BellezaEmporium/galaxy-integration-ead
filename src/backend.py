@@ -50,87 +50,65 @@ class EABackendClient:
 
     async def get_entitlements(self) -> List[Json]:
         """Fetch owned games"""
-        query = """query getPreloadedOwnedGames($next: String, $locale: Locale, $limit: Int, $type: [GameProductType!]!, $entitlementEnabled: Boolean, $isMac: Boolean = false, $storefronts: [UserGameProductStorefront!], $ownershipMethods: [OwnershipMethod!], $processorArchitectures: [ProcessorArchitecture!], $platforms: [GamePlatform!]!) {
-        me {
-            ownedGameProducts(
-            storefronts: $storefronts
-            locale: $locale
-            paging: {limit: $limit, next: $next}
-            productFound: true
-            orderBy: {field: NAME, direction: ASC}
-            ownershipMethod: $ownershipMethods
-            processorArchitectures: $processorArchitectures
-            type: $type
-            downloadableOnly: false
-            entitlementEnabled: $entitlementEnabled
-            platforms: $platforms
-            ) {
-            items {
-                id: originOfferId
-                status
-                product {
-                id
-                name
-                downloadable
-                gameSlug
-                trialDetails {
-                    trialType
-                }
-                baseItem(availabilities: [VISIBLE]) {
-                    title
-                    id
-                    baseGameSlug
-                    gameType
-                }
-                gamePlatformDetails @include(if: $isMac) {
-                    gamePlatform
-                }
-                processorArchitectureDetails @include(if: $isMac) {
-                    processorArchitecture
-                    platform
-                }
-                gameProductUser(storefronts: $storefronts) {
-                    ownershipMethods
-                    initialEntitlementDate
-                    entitlementId
-                    gameProductUserTrial {
-                    trialTimeRemainingSeconds
-                    }
+        query = """query getPreloadedOwnedGames($isMac: Boolean = false, $storefronts: [UserGameProductStorefront!], $processorArchitectures: [ProcessorArchitecture!]) {
+            me {
+                ownedGameProducts(
+                storefronts: [EA]
+                locale: "DEFAULT"
+                paging: {limit: 9999, next: null}
+                productFound: true
+                orderBy: {field: NAME, direction: ASC}
+                ownershipMethod: [PURCHASE, REDEMPTION, ENTITLEMENT_GRANT]
+                processorArchitectures: $processorArchitectures
+                type: [DIGITAL_FULL_GAME, PACKAGED_FULL_GAME]
+                downloadableOnly: false
+                entitlementEnabled: true
+                platforms: [PC]
+                ) {
+                items {
+                    id: originOfferId
                     status
-                }
-                purchaseStatus {
-                    repurchasable
+                    product {
+                    id
+                    name
+                    downloadable
+                    gameSlug
+                    trialDetails {
+                        trialType
+                    }
+                    baseItem(availabilities: [VISIBLE]) {
+                        title
+                        id
+                        baseGameSlug
+                        gameType
+                    }
+                    gamePlatformDetails @include(if: $isMac) {
+                        gamePlatform
+                    }
+                    processorArchitectureDetails @include(if: $isMac) {
+                        processorArchitecture
+                        platform
+                    }
+                    gameProductUser(storefronts: $storefronts) {
+                        ownershipMethods
+                        initialEntitlementDate
+                        entitlementId
+                        gameProductUserTrial {
+                        trialTimeRemainingSeconds
+                        }
+                        status
+                    }
+                    purchaseStatus {
+                        repurchasable
+                    }
+                    }
                 }
                 }
             }
-            }
-        }
         }"""
-        variables = {
-            "next": None,
-            "locale": "DEFAULT",
-            "limit": 9999,
-            "type": [
-                "DIGITAL_FULL_GAME",
-                "PACKAGED_FULL_GAME"
-            ],
-            "entitlementEnabled": True,
-            "isMac": False,
-            "storefronts": [
-                "EA"
-            ],
-            "platforms": [
-                "PC"
-            ],
-            "ownershipMethods": [
-                "PURCHASE",
-                "REDEMPTION",
-                "ENTITLEMENT_GRANT"
-            ]
-        }
         
-        url = f"{self._get_api_host()}"
-        response = await self._http_client.post(url, json={"query": query, "variables": json.dumps(variables)})
+        url = f"{self._get_api_host()}?query={quote(query)}"
+        response = await self._http_client.get(url)
         
         try:
             items = response['data']['me']['ownedGameProducts']['items']
@@ -140,19 +118,17 @@ class EABackendClient:
             raise UnknownBackendResponse()
 
     async def get_offers(self, offer_ids: List[str]) -> Dict[str, Json]:
-        query = (
-            "query{"
-            f"legacyOffers(offerIds: {json.dumps(offer_ids)}, locale: \"DEFAULT\") {{"
-            "offerId: id contentId basePlatform primaryMasterTitleId mdmTitleIds "
-            "achievementSetOverride multiplayerId installCheckOverride executePathOverride "
-            "displayName displayType metadataInstallLocation softwarePlatform softwareId"
-            "}"
-            f"gameProducts(offerIds: {json.dumps(offer_ids)}, locale: \"DEFAULT\") {{"
-            "items{{id name originOfferId baseItem {{title gameType}} gameSlug}}"
-            "}}"
-            "}}"
-        )
-
+        ids_json = json.dumps(offer_ids)
+        query = f"""query{{
+            legacyOffers(offerIds:{ids_json},locale:"DEFAULT"){{
+                offerId:id contentId basePlatform primaryMasterTitleId mdmTitleIds
+                achievementSetOverride multiplayerId installCheckOverride executePathOverride
+                displayName displayType metadataInstallLocation softwarePlatform softwareId
+            }}
+            gameProducts(offerIds:{ids_json},locale:"DEFAULT"){{
+                items{{id name originOfferId baseItem{{title gameType}} gameSlug}}
+            }}
+        }}"""
         url = f"{self._get_api_host()}?query={quote(query)}"
         response = await self._http_client.get(url)
 
@@ -160,6 +136,9 @@ class EABackendClient:
             if not isinstance(response, dict):
                 raise ValueError("Response is not a dict")
             data = response.get('data') or {}
+            errors = response.get('errors')
+            if errors:
+                logger.warning("GraphQL errors in get_offers: %s", errors)
 
             legacy_offers = data.get('legacyOffers') or []
             game_products = (data.get('gameProducts') or {}).get('items', [])
@@ -192,12 +171,9 @@ class EABackendClient:
                     or {}
                 )
 
-                if not product:
-                    continue
-
                 # Check if DLC/expansion
                 display_type = legacy_offer.get('displayType', '').replace('_', '').lower()
-                game_type = product.get('baseItem', {}).get('gameType', '').lower()
+                game_type = (product.get('baseItem') or {}).get('gameType', '').lower() if product else ''
                 
                 if display_type in {"addon", "expansion", "dlc"} or game_type in {"extra_content", "expansion"}:
                     logger.debug("Offer %s filtered out as DLC (displayType=%s gameType=%s)", offer_id, display_type, game_type)
@@ -205,15 +181,16 @@ class EABackendClient:
 
                 # Set display name if missing
                 if not legacy_offer.get('displayName'):
-                    legacy_offer['displayName'] = product.get('name') or f"Unknown Game ({offer_id})"
+                    legacy_offer['displayName'] = (product.get('name') if product else None) or f"Unknown Game ({offer_id})"
                 
                 # Set game slug if available
-                if product.get('gameSlug'):
+                if product and product.get('gameSlug'):
                     legacy_offer['gameSlug'] = product['gameSlug']
 
-                legacy_offer['game_product'] = product
+                if product:
+                    legacy_offer['game_product'] = product
 
-                result[product.get('originOfferId') or offer_id] = legacy_offer
+                result[product.get('originOfferId') or offer_id if product else offer_id] = legacy_offer
 
             return result
         except Exception as e:

@@ -1,7 +1,9 @@
 from galaxy.api.types import Game, LicenseInfo
 from galaxy.api.consts import LicenseType
-from galaxy.api.errors import AuthenticationRequired, AccessDenied, UnknownError
+from galaxy.api.errors import AuthenticationRequired, AccessDenied, BackendError, UnknownError
 import pytest
+
+from tests.async_mock import AsyncMock
 
 
 @pytest.mark.asyncio
@@ -217,3 +219,27 @@ async def test_cache(authenticated_plugin, backend_client, mocker):
     await authenticated_plugin.get_owned_games()
     backend_client.get_entitlements.assert_called_once()
     backend_client.get_offer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_offers_uses_smaller_batches_and_splits_failures(authenticated_plugin, backend_client):
+    async def get_offers_side_effect(chunk):
+        if len(chunk) > 2:
+            raise BackendError("Request timed out")
+
+        return {
+            offer_id: {
+                "offerId": offer_id,
+                "displayName": f"Game {offer_id}"
+            }
+            for offer_id in chunk
+        }
+
+    backend_client.get_offers = AsyncMock(side_effect=get_offers_side_effect)
+
+    offer_ids = [f"OFFER-{index}" for index in range(5)]
+
+    result = await authenticated_plugin._get_offers(offer_ids)
+
+    assert set(result.keys()) == set(offer_ids)
+    assert [len(call[0][0]) for call in backend_client.get_offers.call_args_list] == [5, 2, 3, 1, 2]

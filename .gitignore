@@ -30,3 +30,4 @@ credentials.data
 
 # protos from the EA_Protobuffers project, need to be generated via task
 src/ea_protos/
+protoc/

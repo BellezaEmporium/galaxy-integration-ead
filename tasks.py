@@ -98,7 +98,8 @@ def build(c, output='output', ziparchive=None):
         '--platform', PLATFORM,
         '--target "{}"'.format(output),
         '--no-compile',
-        '--no-deps'
+        '--no-deps',
+        '--only-binary=grpcio' # grpcio is having a bad time building from source if windows is the host
     ]
     c.run(" ".join(args), echo=True)
     os.unlink(tmp.name)
