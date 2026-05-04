@@ -90,7 +90,7 @@ class AuthenticatedHttpClient(HttpClient):
         return self._access_token is not None
     
     def supports_presence(self) -> bool:
-        return False
+        return True
 
     def is_access_token_valid(self) -> bool:
         if not self._access_token:
@@ -228,7 +228,7 @@ class AuthenticatedHttpClient(HttpClient):
             "authorization": f"Bearer {self._access_token}",
             "content-type": "application/grpc-web+json",
             "accept": "application/grpc-web+json",
-            "x-grpc-web": "1",
+            "grpc-accept-encoding": "gzip",
             "x-call-sequence": "1",
             "user-agent": "ProtoHttp 2.0/DS 18.0.0 (Windows)",
         }
@@ -246,7 +246,7 @@ class AuthenticatedHttpClient(HttpClient):
     async def create_presence_session(self, locale: str = "en-US") -> Dict[str, Any]:
         payload = {
             "1": {"1": "EA"},
-            "2": f"${self._make_presence_session_id()}",
+            "2": f"\n${self._make_presence_session_id()}",
             "3": {"1": "PC"},
             "4": locale,
         }
@@ -260,27 +260,63 @@ class AuthenticatedHttpClient(HttpClient):
     async def connect_presence_session(self, blob: str) -> Dict[str, Any]:
         payload = {
             "1": {"1": blob},
-            "2": [
-                {"1": "ea_app.presenceAvailability", "2": {"3": 1}},
-                {"1": "ea_app.presenceIsInvisible", "2": {"3": 0}},
-            ],
+            "2": {
+                "2": [
+                    {"1": "ea_app.presenceAvailability", "2": {"3": 1}},
+                    {"1": "ea_app.presenceIsInvisible", "2": {"3": 0}},
+                ]
+            },
         }
         return await self._post_presence_json("ConnectToPresenceSession", payload)
 
-    async def get_friends_presence(self) -> List[Dict[str, Any]]:
-        data = await self._post_presence_json("GetFriendsPresence", {})
+    def _extract_presence_entries(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not isinstance(data, dict):
+            return []
+
         if isinstance(data.get("presences"), list):
             return data["presences"]
         if isinstance(data.get("friends"), list):
             return data["friends"]
         if isinstance(data.get("1"), list):
             return data["1"]
+
+        # Some grpc-web JSON adapters wrap list payloads under nested numeric keys.
+        nested = data.get("2")
+        if isinstance(nested, dict) and isinstance(nested.get("1"), list):
+            return nested["1"]
+
+        return []
+
+    async def get_friends_presence(self) -> List[Dict[str, Any]]:
+        if not getattr(self, "_presence_initialized", False):
+            try:
+                sess = await self.create_presence_session()
+                if sess and "blob" in sess:
+                    await self.connect_presence_session(sess["blob"])
+                self._presence_initialized = True
+            except Exception as e:
+                logger.error("Failed to initialize presence session: %s", e)
+
+        payloads = ({}, {"1": {}}, {"2": {"1": "EA"}})
+        last_error: Optional[Exception] = None
+
+        for payload in payloads:
+            try:
+                data = await self._post_presence_json("GetFriendsPresence", payload)
+                return self._extract_presence_entries(data)
+            except BackendError as e:
+                last_error = e
+                logger.debug("GetFriendsPresence rejected payload shape %s: %s", payload, e)
+
+        if last_error:
+            raise last_error
+
         return []
 
     def _make_presence_session_id(self) -> str:
         alphabet = "0123456789abcdef"
         parts = [8, 4, 4, 4, 12]
-        return "-".join(
+        return "".join(
             "".join(random.choice(alphabet) for _ in range(size))
             for size in parts
         )

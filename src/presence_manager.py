@@ -1,65 +1,83 @@
-import asyncio
 import logging
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from galaxy.api.types import UserPresence
-from presence import presence_from_friend_entry, friend_id_from_entry
+from presence import presence_from_rtm_entry, player_id_from_rtm_entry
+from rtm_client import RtmClient
 
 logger = logging.getLogger(__name__)
 
+
 class PresenceManager:
-    def __init__(self, http_client, update_friend_presence_cb: Callable[[str, UserPresence], None], interval_seconds: int = 30) -> None:
+    """
+    Wraps RtmClient to provide Galaxy-compatible presence updates.
+
+    Instead of polling, presence now arrives as real-time push events
+    over EA's RTM TCP+TLS connection (rtm.tnt-ea.com:9000).
+    """
+
+    def __init__(
+        self,
+        http_client,
+        update_friend_presence_cb: Callable[[str, UserPresence], None],
+        interval_seconds: int = 30,  # kept for API compat, unused (RTM is push-based)
+    ) -> None:
         self._http = http_client
         self._push = update_friend_presence_cb
-        self._interval = interval_seconds
-        self._task: Optional[asyncio.Task] = None
         self._cache: Dict[str, UserPresence] = {}
         self._running = False
         self._disabled = False
 
+        self._rtm = RtmClient(
+            access_token_provider=lambda: getattr(http_client, "_access_token", None),
+            on_presence_update=self._on_rtm_presence,
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Lifecycle                                                           #
+    # ------------------------------------------------------------------ #
+
     def start(self) -> None:
-        if self._disabled or (self._task and not self._task.done()):
+        if self._disabled or self._running:
             return
-        if not getattr(self._http, "supports_presence", lambda: False)():
-            logger.info("EA social presence transport disabled; skipping presence loop")
+        if not getattr(self._http, "is_authenticated", lambda: False)():
+            logger.info("Not authenticated; skipping RTM presence")
             self._disabled = True
             return
         self._running = True
-        self._task = asyncio.create_task(self._run())
+        self._rtm.start()
+        logger.info("RTM presence manager started")
 
     async def stop(self) -> None:
         self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        await self._rtm.stop()
+        logger.info("RTM presence manager stopped")
+
+    def set_friends(self, nucleus_ids: List[str]) -> None:
+        """
+        Provide the list of friend Nucleus IDs to subscribe to.
+        Call this after get_friends() resolves.
+        """
+        self._rtm.set_friends(nucleus_ids)
+
+    # ------------------------------------------------------------------ #
+    #  Cache / query                                                       #
+    # ------------------------------------------------------------------ #
 
     def get_friend_presence(self, user_id: str) -> Optional[UserPresence]:
         return self._cache.get(user_id)
 
-    async def _run(self) -> None:
-        while self._running:
-            try:
-                await self._refresh_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Presence refresh failed")
-                self._disabled = True
-                self._running = False
-                return
-            await asyncio.sleep(self._interval)
+    # ------------------------------------------------------------------ #
+    #  RTM callback                                                        #
+    # ------------------------------------------------------------------ #
 
-    async def _refresh_once(self) -> None:
-        entries = await self._http.get_friends_presence()
-        for entry in entries:
-            user_id = friend_id_from_entry(entry)
-            presence = presence_from_friend_entry(entry)
-            if not user_id or presence is None:
-                continue
-            if self._cache.get(user_id) != presence:
-                self._cache[user_id] = presence
-                self._push(user_id, presence)
+    def _on_rtm_presence(self, player_id: str, raw: dict) -> None:
+        presence = presence_from_rtm_entry(raw)
+        if presence is None:
+            return
+        if self._cache.get(player_id) != presence:
+            self._cache[player_id] = presence
+            try:
+                self._push(player_id, presence)
+            except Exception:
+                logger.exception("Failed to push presence update for %s", player_id)

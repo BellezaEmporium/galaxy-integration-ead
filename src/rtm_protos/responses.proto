@@ -1,0 +1,52 @@
+syntax = "proto3";
+package eadp.rtm;
+
+import "common.proto";
+
+message SessionV1 {
+    string sessionKey = 1;
+    PlatformV1 platform = 2;
+    string clientVersion = 3;
+    string timestamp = 4;
+}
+
+message LoginV3Response {
+    string sessionKey = 1;
+    repeated SessionV1 connectedSessions = 2;
+}
+
+message SuccessV1 {
+    oneof body {
+        LoginV3Response loginV3Response = 3;
+    }
+}
+
+message ErrorV1 {
+	string errorCode = 1;
+	string errorMessage = 2;
+
+	oneof body {
+		LoginErrorV1 loginError = 7;
+	}
+}
+
+message LoginErrorV1 {
+	repeated SessionV1 connectedSessions = 1;
+}
+
+message PresenceV1 {
+	string personaId = 1;
+
+	optional string status = 2;
+	optional string timestamp = 3;
+
+	Player player = 4;
+	BasicPresenceType basicPresenceType = 5;
+
+	optional string userDefinedPresence = 6;
+	optional RichPresenceV1 richPresence = 7;
+
+	optional string sessionKey = 8;
+	optional string clientVersion = 9;
+	optional PlatformV1 platform = 10;
+}

@@ -1,0 +1,57 @@
+syntax = "proto3";
+package eadp.rtm;
+
+enum PlatformV1 {
+    NONE_PLATFORM = 0;
+    UNKNOWN_PLATFORM = 1;
+    MOBILE = 2;
+    PC = 3;
+    WEB = 4;
+    XBOXLIVE = 5;
+    PSN = 6;
+    SWITCH = 7;
+    STEAM = 8;
+    XBSK = 9;
+    PS5 = 10;
+}
+
+enum UserType {
+    NONE_USER_TYPE = 0;
+	PERSONA = 1;
+	NUCLEUS = 2;
+}
+
+enum BasicPresenceType {
+	NONE_PRESENCE = 0;
+	UNKNOWN_PRESENCE = 1;
+	OFFLINE = 2;
+	ONLINE = 3;
+	DND = 4;
+	AWAY = 5;
+	INVISIBLE = 6;
+	CUSTOM = 7;
+}
+
+enum RichPresenceType {
+	NONE_RICH_PRESENCE = 0;
+	UNKNOWN_RICH_PRESENCE = 1;
+	LFG = 2;
+	BROADCASTING = 3;
+}
+
+message RichPresenceV1 {
+	string game = 1;
+	PlatformV1 platform = 2;
+	string gameModeType = 3;
+	string gameMode = 4;
+	string gameSessionData = 5;
+	RichPresenceType richPresenceType = 6;
+	string startTimestamp = 7;
+	string endTimestamp = 8;
+	string customRichPresenceData = 9;
+}
+
+message Player {
+    string playerId = 1;
+    string productId = 2;
+}

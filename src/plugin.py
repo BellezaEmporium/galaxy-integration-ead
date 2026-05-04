@@ -10,9 +10,9 @@ import webbrowser
 import logging
 
 from functools import partial
-from typing import Any, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable, Tuple, Callable
+from typing import Any, Dict, List, NewType, Optional, AsyncGenerator, NamedTuple, Set, Iterable, Tuple, Callable, cast
 from urllib.parse import urlparse, parse_qs
-from presence_manager import PresenceManager
+from rtm_client import RtmClient
 
 logger = logging.getLogger(__name__)
 
@@ -209,10 +209,9 @@ class EAPlugin(Plugin):
         self._http_client.set_save_tokens_callback(self._store_tokens)
 
         self._backend_client = EABackendClient(self._http_client)
-        self._presence_manager = PresenceManager(
-            http_client=self._http_client,
-            update_friend_presence_cb=self.update_user_presence,
-            interval_seconds=30,
+        self._presence_manager = RtmClient(
+            access_token_provider=lambda: getattr(self._http_client, "_access_token", None),
+            on_presence_update=cast(Callable[[str, Dict[Any, Any]], None], self.update_user_presence),
         )
 
         self._auth_manager = AuthenticationManager(self._http_client, self._backend_client)

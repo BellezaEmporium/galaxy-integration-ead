@@ -1,0 +1,40 @@
+syntax = "proto3";
+package eadp.rtm;
+
+import "common.proto";
+
+message PresenceSubscribeV1 {
+    repeated Player players = 2;
+}
+
+message LoginRequestV3 {
+	string token = 1;
+
+	bool reconnect = 2;
+	bool heartbeat = 3;
+    
+	UserType userType = 4;
+	string productId = 5;
+	PlatformV1 platform = 6;
+	string clientVersion = 7;
+
+	optional string sessionKey = 8;
+	optional string forceDisconnectSessionKey = 9;
+}
+
+message ReconnectRequestV1 {
+    string sessionKey = 1;
+}
+
+message PresenceUpdateV1 {
+    string status = 1;
+    BasicPresenceType basicPresenceType = 2;
+    string userDefinedPresence = 3;
+    RichPresenceV1 richPresence = 4;
+}
+
+message HeartbeatV1 {}
+
+message SessionCleanupV1 {
+	string sessionKey = 1;
+}
