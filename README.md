@@ -53,7 +53,7 @@ Just login to your EA Desktop account from GOG Galaxy, and enjoy your games.
 
 ## Kudos
 
-- [@imLinguin](https://github.com/imLinguin) for helping me on the EA login logic & various hints
+- [@imLinguin](https://github.com/imLinguin) and the [@ArmchairDevelopers](https://github.com/ArmchairDevelopers) crew for helping me on various points, their current work & various hints
 - [@Nutzzz](https://github.com/Nutzzz) for describing me the IS file decryption and testing the plugin on various aspects
 - [The Playnite community](https://github.com/JosefNemec/Playnite), you guys rock !
 - All the plugin testers
