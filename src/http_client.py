@@ -88,9 +88,6 @@ class AuthenticatedHttpClient(HttpClient):
 
     def is_authenticated(self) -> bool:
         return self._access_token is not None
-    
-    def supports_presence(self) -> bool:
-        return True
 
     def is_access_token_valid(self) -> bool:
         if not self._access_token:
@@ -217,109 +214,6 @@ class AuthenticatedHttpClient(HttpClient):
             exp = self._parse_jwt_exp(self._access_token if self._access_token else "")
             self._access_token_expires_at = (exp - 60) if exp else None
         self._save_lats()
-
-    async def _post_presence_json(self, method_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Uses grpc-web JSON if the upstream accepts it.
-        This keeps the implementation compact and avoids needing social protos.
-        """
-        url = f"https://api.k.social.ea.com/eadp.social.presence.v1.PresenceService/{method_name}"
-        headers = {
-            "authorization": f"Bearer {self._access_token}",
-            "content-type": "application/grpc-web+json",
-            "accept": "application/grpc-web+json",
-            "grpc-accept-encoding": "gzip",
-            "x-call-sequence": "1",
-            "user-agent": "ProtoHttp 2.0/DS 18.0.0 (Windows)",
-        }
-        async with self._session.post(url, headers=headers, json=payload) as resp:
-            if resp.status == 401:
-                raise AuthenticationRequired("Presence request unauthorized")
-            if resp.status >= 400:
-                text = await resp.text()
-                raise BackendError(f"{method_name} failed: HTTP {resp.status} {text[:300]}")
-            data = await resp.json(content_type=None)
-            if not isinstance(data, dict):
-                raise BackendError(f"{method_name} returned unexpected payload")
-            return data
-
-    async def create_presence_session(self, locale: str = "en-US") -> Dict[str, Any]:
-        payload = {
-            "1": {"1": "EA"},
-            "2": f"\n${self._make_presence_session_id()}",
-            "3": {"1": "PC"},
-            "4": locale,
-        }
-        data = await self._post_presence_json("CreatePresenceSession", payload)
-        token = data.get("1")
-        binary_blob = data.get("2", {}).get("1") if isinstance(data.get("2"), dict) else data.get("2")
-        if not token or not binary_blob:
-            raise BackendError("CreatePresenceSession returned incomplete data")
-        return {"token": token, "blob": binary_blob}
-
-    async def connect_presence_session(self, blob: str) -> Dict[str, Any]:
-        payload = {
-            "1": {"1": blob},
-            "2": {
-                "2": [
-                    {"1": "ea_app.presenceAvailability", "2": {"3": 1}},
-                    {"1": "ea_app.presenceIsInvisible", "2": {"3": 0}},
-                ]
-            },
-        }
-        return await self._post_presence_json("ConnectToPresenceSession", payload)
-
-    def _extract_presence_entries(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        if not isinstance(data, dict):
-            return []
-
-        if isinstance(data.get("presences"), list):
-            return data["presences"]
-        if isinstance(data.get("friends"), list):
-            return data["friends"]
-        if isinstance(data.get("1"), list):
-            return data["1"]
-
-        # Some grpc-web JSON adapters wrap list payloads under nested numeric keys.
-        nested = data.get("2")
-        if isinstance(nested, dict) and isinstance(nested.get("1"), list):
-            return nested["1"]
-
-        return []
-
-    async def get_friends_presence(self) -> List[Dict[str, Any]]:
-        if not getattr(self, "_presence_initialized", False):
-            try:
-                sess = await self.create_presence_session()
-                if sess and "blob" in sess:
-                    await self.connect_presence_session(sess["blob"])
-                self._presence_initialized = True
-            except Exception as e:
-                logger.error("Failed to initialize presence session: %s", e)
-
-        payloads = ({}, {"1": {}}, {"2": {"1": "EA"}})
-        last_error: Optional[Exception] = None
-
-        for payload in payloads:
-            try:
-                data = await self._post_presence_json("GetFriendsPresence", payload)
-                return self._extract_presence_entries(data)
-            except BackendError as e:
-                last_error = e
-                logger.debug("GetFriendsPresence rejected payload shape %s: %s", payload, e)
-
-        if last_error:
-            raise last_error
-
-        return []
-
-    def _make_presence_session_id(self) -> str:
-        alphabet = "0123456789abcdef"
-        parts = [8, 4, 4, 4, 12]
-        return "".join(
-            "".join(random.choice(alphabet) for _ in range(size))
-            for size in parts
-        )
 
     async def _request(self, method: str, url: str, *args, **kwargs) -> dict:
         label = f"{method} {url}"

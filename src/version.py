@@ -4,9 +4,10 @@ __changelog__ = {
     "unreleased":"""""",
     "0.44.6":
     """
-        - added base part for user presence & rich presence from EA data
-        - added protobufs from EA for presence parsing
-        - fixed test
+        - implemented user presence parsing and calls to Galaxy (thanks to the Maxima project)
+        - added protobufs for presence parsing (see src/generated_protos)
+        - fixed the subscription games not properly loading due to EA API changes
+        - minor code fixups and improvements
     """,
     "0.44.5":
     """

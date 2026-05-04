@@ -409,7 +409,7 @@ class EAPlugin(Plugin):
         return Authentication(user_id, user_name)
 
     async def _start_background_services(self):
-        if self._presence_manager and self._http_client.supports_presence():
+        if self._presence_manager:
             try:
                 self._presence_manager.start()
             except Exception:
