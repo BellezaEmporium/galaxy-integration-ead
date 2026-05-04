@@ -14,6 +14,7 @@ build/
 output/
 Lib/
 *.spec
+origin_v*.zip
 
 # editors
 .idea
@@ -28,6 +29,5 @@ cache.dir
 debug.py
 credentials.data
 
-# protos from the EA_Protobuffers project, need to be generated via task
-src/ea_protos/
+# protoc
 protoc/
