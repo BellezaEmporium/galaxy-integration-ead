@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+
 from collections import namedtuple
 from datetime import datetime
 from urllib.parse import quote
@@ -50,62 +52,67 @@ class EABackendClient:
 
     async def get_entitlements(self) -> List[Json]:
         """Fetch owned games"""
-        query = """query getPreloadedOwnedGames($isMac: Boolean = false, $storefronts: [UserGameProductStorefront!], $processorArchitectures: [ProcessorArchitecture!]) {
-            me {
+        # Verify if launched from a Mac or Windows machine to modify a specific part of the query
+        if os.name == 'nt':
+            is_mac = False
+        elif os.name == 'posix':
+            is_mac = True
+        query = f"""query getPreloadedOwnedGames($isMac: Boolean = {str(is_mac).lower()}) {{
+            me {{
                 ownedGameProducts(
-                storefronts: [EA]
-                locale: "DEFAULT"
-                paging: {limit: 9999, next: null}
-                productFound: true
-                orderBy: {field: NAME, direction: ASC}
-                ownershipMethod: [PURCHASE, REDEMPTION, ENTITLEMENT_GRANT]
-                processorArchitectures: $processorArchitectures
-                type: [DIGITAL_FULL_GAME, PACKAGED_FULL_GAME]
-                downloadableOnly: false
-                entitlementEnabled: true
-                platforms: [PC]
-                ) {
-                items {
+                    storefronts: [EA]
+                    locale: "DEFAULT"
+                    paging: {{limit: 9999, next: null}}
+                    productFound: true
+                    orderBy: {{field: NAME, direction: ASC}}
+                    ownershipMethod: [UNKNOWN, ASSOCIATION, PURCHASE, REDEMPTION, GIFT_RECEIPT, ENTITLEMENT_GRANT, DIRECT_ENTITLEMENT, PRE_ORDER_PURCHASE, VAULT]
+                    type: [DIGITAL_FULL_GAME, PACKAGED_FULL_GAME]
+                    downloadableOnly: false
+                    entitlementEnabled: true
+                    addFieldsToPreloadGames: true
+                    platforms: [PC]
+                ) {{
+                items {{
                     id: originOfferId
                     status
-                    product {
+                    product {{
                     id
                     name
                     downloadable
                     gameSlug
-                    trialDetails {
+                    trialDetails {{
                         trialType
-                    }
-                    baseItem(availabilities: [VISIBLE]) {
+                    }}
+                    baseItem(availabilities: [VISIBLE]) {{
                         title
                         id
                         baseGameSlug
                         gameType
-                    }
-                    gamePlatformDetails @include(if: $isMac) {
+                    }}
+                    gamePlatformDetails @include(if: $isMac) {{
                         gamePlatform
-                    }
-                    processorArchitectureDetails @include(if: $isMac) {
+                    }}
+                    processorArchitectureDetails @include(if: $isMac) {{
                         processorArchitecture
                         platform
-                    }
-                    gameProductUser(storefronts: $storefronts) {
+                    }}
+                    gameProductUser(storefronts: $storefronts) {{
                         ownershipMethods
                         initialEntitlementDate
                         entitlementId
-                        gameProductUserTrial {
+                        gameProductUserTrial {{
                         trialTimeRemainingSeconds
-                        }
+                        }}
                         status
-                    }
-                    purchaseStatus {
+                    }}
+                    purchaseStatus {{
                         repurchasable
-                    }
-                    }
-                }
-                }
-            }
-        }"""
+                    }}
+                    }}
+                }}
+                }}
+            }}
+        }}"""
         
         url = f"{self._get_api_host()}?query={quote(query)}"
         response = await self._http_client.get(url)
