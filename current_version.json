@@ -1,8 +1,8 @@
 {
-    "tag_name": "v44.6",
+    "tag_name": "v50.0",
     "assets": [
         {
-            "browser_download_url": "https://github.com/BellezaEmporium/galaxy-integration-ead/releases/download/v44.6/galaxy_autoupgrade_package.zip",
+            "browser_download_url": "https://github.com/BellezaEmporium/galaxy-integration-ead/releases/download/v50.0/galaxy_autoupgrade_package.zip",
             "name": "galaxy_autoupgrade_package.zip"
         }
     ]
