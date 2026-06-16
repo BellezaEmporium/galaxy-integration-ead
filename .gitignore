@@ -1,6 +1,5 @@
 # virtualenv
-.venv/
-venv/
+.venv*
 Scripts/
 pyvenv.cfg
 

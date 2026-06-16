@@ -1,7 +1,11 @@
-__version__ = "0.44.6"
+__version__ = "0.50.0"
 
 __changelog__ = {
     "unreleased":"""""",
+    "0.50.0":"""
+        - added full support for Galaxy 2.1
+        - bumped code to Python 3.13
+    """,
     "0.44.6":
     """
         - implemented user presence parsing and calls to Galaxy (thanks to the Maxima project)

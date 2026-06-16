@@ -4,38 +4,38 @@ import logging
 import random
 import ssl
 import struct
-from typing import Callable, Dict, Optional, List
+import time
+from collections.abc import Callable
+from typing import Final
 
 from google.protobuf.message import DecodeError
-
-# -- protobuf generated stubs (see rtm_pb2.py below) --
-from generated_protos import rtm_pb2, requests_pb2
+from generated_protos import requests_pb2, responses_pb2, rtm_pb2
 
 logger = logging.getLogger(__name__)
 
-RTM_HOST = "rtm.tnt-ea.com"
-RTM_PORT = 9000
+RTM_HOST: Final = "rtm.tnt-ea.com"
+RTM_PORT: Final = 9000
 
-BASIC_PRESENCE_OFFLINE  = 2
-BASIC_PRESENCE_ONLINE   = 3
-BASIC_PRESENCE_DND      = 4
-BASIC_PRESENCE_AWAY     = 5
-BASIC_PRESENCE_INVISIBLE = 6
+BASIC_PRESENCE_OFFLINE: Final = 2
+BASIC_PRESENCE_ONLINE: Final = 3
+BASIC_PRESENCE_DND: Final = 4
+BASIC_PRESENCE_AWAY: Final = 5
+BASIC_PRESENCE_INVISIBLE: Final = 6
 
-PLATFORM_PC   = 3
-USER_NUCLEUS  = 2
+PLATFORM_PC: Final = 3
+USER_NUCLEUS: Final = 2
 
 
 class RtmClient:
     """
-    Async EA RTM client.  Maintains a persistent TLS TCP connection,
+    Async EA RTM client. Maintains a persistent TLS TCP connection,
     logs in, subscribes to a friend list, and delivers presence updates
     via callback.
     """
 
     def __init__(
         self,
-        access_token_provider: Callable[[], Optional[str]],
+        access_token_provider: Callable[[], str | None],
         on_presence_update: Callable[[str, dict], None],
         reconnect_delay: float = 5.0,
     ) -> None:
@@ -46,12 +46,12 @@ class RtmClient:
         self._subscribed_ids: list[str] = []
         self._request_index: int = 0
 
-        self._writer: Optional[asyncio.StreamWriter] = None
-        self._task: Optional[asyncio.Task] = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._task: asyncio.Task | None = None
         self._running = False
 
     # ------------------------------------------------------------------ #
-    #  Public API                                                          #
+    #  Public API                                                        #
     # ------------------------------------------------------------------ #
 
     def start(self) -> None:
@@ -70,12 +70,12 @@ class RtmClient:
                 pass
         self._close_writer()
 
-    def set_friends(self, nucleus_ids: "list[str]") -> None:
+    def set_friends(self, nucleus_ids: list[str]) -> None:
         """Update the list of friend IDs to subscribe to."""
         self._subscribed_ids = list(nucleus_ids)
 
     # ------------------------------------------------------------------ #
-    #  Connection loop                                                     #
+    #  Connection loop                                                   #
     # ------------------------------------------------------------------ #
 
     async def _run_loop(self) -> None:
@@ -103,7 +103,7 @@ class RtmClient:
             self._close_writer()
 
     # ------------------------------------------------------------------ #
-    #  Frame read/write                                                    #
+    #  Frame read/write                                                  #
     # ------------------------------------------------------------------ #
 
     async def _receive_loop(self, reader: asyncio.StreamReader) -> None:
@@ -152,7 +152,6 @@ class RtmClient:
             await self._writer.drain()
 
     def _next_request_id(self) -> str:
-        import time
         ts = int(time.time())
         rid = f"c-{self._request_index}-{ts}-{ts}"
         self._request_index += 1
@@ -167,18 +166,16 @@ class RtmClient:
             self._writer = None
 
     # ------------------------------------------------------------------ #
-    #  RTM protocol messages                                               #
+    #  RTM protocol messages                                             #
     # ------------------------------------------------------------------ #
 
     async def _login(self) -> None:
-        token = self._get_token()
-        if not token:
+        if not (token := self._get_token()):
             raise RuntimeError("No access token available for RTM login")
 
-        import os
         version_str = json.dumps({
             "clientType": "Client",
-            "version": "galaxy-plugin-1.0.0-rtm",
+            "version": "gog-galaxy-integ-rtm",
             "integrations": "",
         })
 
@@ -194,7 +191,7 @@ class RtmClient:
         await self._send("loginRequestV3", req)
         logger.info("RTM LoginRequestV3 sent")
 
-    async def _subscribe(self, nucleus_ids: List[str]) -> None:
+    async def _subscribe(self, nucleus_ids: list[str]) -> None:
         req = requests_pb2.PresenceSubscribeV1()
         for pid in nucleus_ids:
             p = req.players.add()
@@ -210,7 +207,7 @@ class RtmClient:
     #  Incoming message dispatch                                           #
     # ------------------------------------------------------------------ #
 
-    async def _dispatch(self, comm: "rtm_pb2.Communication") -> None:
+    async def _dispatch(self, comm: rtm_pb2.Communication) -> None:
         v1 = comm.v1
         if not v1:
             return
@@ -225,12 +222,11 @@ class RtmClient:
             err = v1.error
             logger.warning("RTM error %s: %s", err.errorCode, err.errorMessage)
         elif body_type == "heartbeat":
-            # Echo back
             await self._heartbeat()
         else:
             logger.debug("RTM unhandled body type: %s", body_type)
 
-    def _handle_presence(self, presence: "rtm_pb2.PresenceV1") -> None:
+    def _handle_presence(self, presence: responses_pb2.PresenceV1) -> None:
         # Only process updates from EA Desktop clients
         if presence.HasField("clientVersion"):
             try:
@@ -240,7 +236,6 @@ class RtmClient:
             except (json.JSONDecodeError, AttributeError):
                 return
         else:
-            # If no clientVersion, skip to avoid duplicates from mobile/web sessions
             return
 
         player = presence.player
@@ -249,10 +244,10 @@ class RtmClient:
             return
 
         pid = player.playerId
-        basic = presence.basicPresenceType  # int
+        basic = presence.basicPresenceType
 
-        game_id: Optional[str] = None
-        game_title: Optional[str] = None
+        game_id: str | None = None
+        game_title: str | None = None
 
         if presence.HasField("richPresence"):
             rp = presence.richPresence

@@ -1,13 +1,11 @@
-#use specific pip version for dependencies to work nicely
-pip==22.2
 pip-tools
 
 #core requirements
 requests
 
 #install requirements. 
-invoke==2.2.0
+invoke
 wheel
 psutil # look at the processes for games
 
-galaxy.plugin.api==0.69
+galaxy.plugin.api==0.71

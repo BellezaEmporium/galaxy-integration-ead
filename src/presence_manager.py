@@ -1,5 +1,5 @@
 import logging
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 
 from galaxy.api.types import UserPresence
 from presence import presence_from_rtm_entry, player_id_from_rtm_entry
@@ -24,7 +24,7 @@ class PresenceManager:
     ) -> None:
         self._http = http_client
         self._push = update_friend_presence_cb
-        self._cache: Dict[str, UserPresence] = {}
+        self._cache: dict[str, UserPresence] = {}
         self._running = False
         self._disabled = False
 
@@ -34,7 +34,7 @@ class PresenceManager:
         )
 
     # ------------------------------------------------------------------ #
-    #  Lifecycle                                                           #
+    #  Lifecycle                                                         #
     # ------------------------------------------------------------------ #
 
     def start(self) -> None:
@@ -53,7 +53,7 @@ class PresenceManager:
         await self._rtm.stop()
         logger.info("RTM presence manager stopped")
 
-    def set_friends(self, nucleus_ids: List[str]) -> None:
+    def set_friends(self, nucleus_ids: list[str]) -> None:
         """
         Provide the list of friend Nucleus IDs to subscribe to.
         Call this after get_friends() resolves.
@@ -61,14 +61,14 @@ class PresenceManager:
         self._rtm.set_friends(nucleus_ids)
 
     # ------------------------------------------------------------------ #
-    #  Cache / query                                                       #
+    #  Cache / query                                                     #
     # ------------------------------------------------------------------ #
 
-    def get_friend_presence(self, user_id: str) -> Optional[UserPresence]:
+    def get_friend_presence(self, user_id: str) -> UserPresence | None:
         return self._cache.get(user_id)
 
     # ------------------------------------------------------------------ #
-    #  RTM callback                                                        #
+    #  RTM callback                                                      #
     # ------------------------------------------------------------------ #
 
     def _on_rtm_presence(self, player_id: str, raw: dict) -> None:

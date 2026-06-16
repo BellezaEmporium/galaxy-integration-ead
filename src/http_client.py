@@ -5,7 +5,6 @@ import time
 import asyncio
 import random
 import re
-from typing import Any, Dict, List, Optional
 
 import aiohttp
 from aiohttp import ClientSession, CookieJar, ClientTimeout
@@ -52,11 +51,11 @@ class AuthenticatedHttpClient(HttpClient):
         self._save_tokens_callback = None
 
         self._cookie_jar = CustomCookieJar()
-        self._access_token:           Optional[str] = None
-        self._refresh_token:          Optional[str] = None
-        self._last_access_token_success: Optional[int] = None
-        self._access_token_expires_at:   Optional[int] = None
-        self._token_lock       = asyncio.Lock()
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._last_access_token_success: int | None = None
+        self._access_token_expires_at: int | None = None
+        self._token_lock = asyncio.Lock()
         self._refreshing_token = False
 
         self._static_headers = {
@@ -83,7 +82,7 @@ class AuthenticatedHttpClient(HttpClient):
     def set_save_tokens_callback(self, cb):     self._save_tokens_callback = cb
     def set_cookies_updated_callback(self, cb): self._cookie_jar.set_cookies_updated_callback(cb)
 
-    def load_lats_from_cache(self, value: Optional[str]):
+    def load_lats_from_cache(self, value: str | None):
         self._last_access_token_success = int(value) if value else None
 
     def is_authenticated(self) -> bool:
@@ -100,7 +99,7 @@ class AuthenticatedHttpClient(HttpClient):
                 return True
         return time.time() < self._access_token_expires_at
 
-    def _parse_jwt_exp(self, token: str) -> Optional[int]:
+    def _parse_jwt_exp(self, token: str) -> int | None:
         try:
             parts = token.split('.')
             if len(parts) < 2:
@@ -285,7 +284,7 @@ class AuthenticatedHttpClient(HttpClient):
     async def post(self, url, *args, **kwargs):
         return await self._request("POST", url, *args, **kwargs)
 
-    async def authenticate(self, cookies: Optional[dict] = None):
+    async def authenticate(self, cookies: dict | None = None):
         if cookies:
             try:
                 self._cookie_jar.update_cookies(cookies)

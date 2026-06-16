@@ -5,8 +5,7 @@ import tempfile
 import zipfile
 import requests
 import io
-from shutil import rmtree, which
-from distutils.dir_util import copy_tree
+from shutil import rmtree, which, copytree
 
 from invoke.tasks import task
 from galaxy.tools import zip_folder_to_file
@@ -19,16 +18,16 @@ with open(os.path.join(BASE_DIR, "src", "manifest.json"), "r") as f:
 
 if sys.platform == 'win32':
     DIST_DIR = os.environ['localappdata'] + '\\GOG.com\\Galaxy\\plugins\\installed'
-    PLATFORM = "win32"
+    PLATFORM = "win_amd64"
     
     if which("py"):
-        PYTHON_EXE = "py -3.7"
+        PYTHON_EXE = "py -3.13"
     else:
         PYTHON_EXE = "python"
 
     PROTOC_EXE = os.path.join(PROTOC_DIR, "bin", "protoc.exe")
     PROTOC_INCLUDE_DIR = os.path.join(PROTOC_DIR, "include")
-    PROTOC_DOWNLOAD_URL = "https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-win32.zip"
+    PROTOC_DOWNLOAD_URL = "https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protoc-35.1-win64.zip"
 
 
 elif sys.platform == 'darwin':
@@ -38,7 +37,7 @@ elif sys.platform == 'darwin':
 
     PROTOC_EXE = os.path.join(PROTOC_DIR, "bin", "protoc")
     PROTOC_INCLUDE_DIR = os.path.join(PROTOC_DIR, "include")
-    PROTOC_DOWNLOAD_URL = "https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-osx-x86_64.zip"
+    PROTOC_DOWNLOAD_URL = "https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protoc-35.1-osx-x86_64.zip"
 
 
 @task
@@ -75,7 +74,7 @@ def build(c, output='output', ziparchive=None):
     args = [
         'pip', 'install',
         '-r', tmp.name,
-        '--python-version', '37', # Galaxy requires Python 3.7
+        '--python-version', '313', # Galaxy requires Python 3.13
         '--platform', PLATFORM,
         '--target "{}"'.format(output),
         '--no-compile',
@@ -85,7 +84,7 @@ def build(c, output='output', ziparchive=None):
     os.unlink(tmp.name)
 
     print('--> Copying source files')
-    copy_tree("src", output)
+    copytree("src", output, dirs_exist_ok=True)
 
     if ziparchive is not None:
         print('--> Compressing to {}'.format(ziparchive))

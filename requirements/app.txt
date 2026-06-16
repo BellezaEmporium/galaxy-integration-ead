@@ -1,4 +1,4 @@
-galaxy.plugin.api==0.69
+galaxy.plugin.api==0.71
 psutil
-protobuf==4.24.4
+protobuf
 pyobjc-framework-CoreServices==9.2; sys_platform == 'darwin'
