@@ -1,4 +1,5 @@
 galaxy.plugin.api==0.71
 psutil
 protobuf
+py-cpuinfo
 pyobjc-framework-CoreServices==9.2; sys_platform == 'darwin'
