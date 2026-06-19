@@ -5,7 +5,6 @@ import winreg
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from enum import Flag
-from functools import lru_cache
 from typing import Final
 
 if platform.system() == "Windows":
@@ -63,14 +62,13 @@ class RegistryManager:
         return _cached_reg_value(hive, key_path, value_name)
 
 
-@lru_cache(maxsize=512)
 def _cached_reg_value(hive: int, key_path: str, value_name: str) -> str | None:
     """Cached registry value lookup that:
     - tries 64-bit and 32-bit views
     - supports default values
     - expands REG_EXPAND_SZ and %VAR% variables
     """
-    views = [winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY] if "WOW6432Node" in key_path else [winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY]
+    views = [winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY] if "wow6432node" in key_path.lower() else [winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY]
 
     for view in views:
         try:
@@ -298,7 +296,12 @@ def update_local_games(self) -> list[LocalGame]:
 
         if path := game_data.get("installCheckOverride") or game_data.get("executePathOverride"):
             base_path = get_install_path_from_xml(game_data, path)
-            install_path = GamePathResolver.find_executable_in_directory(base_path) if base_path else path
+            if base_path and os.path.isfile(base_path):
+                install_path = base_path
+            elif base_path:
+                install_path = GamePathResolver.find_executable_in_directory(base_path) or base_path
+            else:
+                install_path = path
 
         if install_path and os.path.exists(install_path):
             state = LocalGameState.Installed

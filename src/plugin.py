@@ -14,14 +14,14 @@ from functools import partial
 from typing import Any, AsyncGenerator, NamedTuple, NewType, cast
 
 
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 from rtm_client import RtmClient
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Constants
-LOCAL_GAMES_CACHE_VALID_PERIOD = 5 * 60
+LOCAL_GAMES_CACHE_VALID_PERIOD = 15
 IS_WINDOWS = platform.system().lower() == "windows"
 OFFERS_FETCH_BATCH_SIZE = 16
 
@@ -105,19 +105,30 @@ class AuthenticationManager:
         try:
             pc_sign = generate_pc_sign_fast()
         except Exception as e:
-            logger.error("Failed to generate PC sign: %s", e)
-            pc_sign = ""
+            logger.error("Failed to generate PC sign fast, using dummy: %s", e)
+            import hashlib, time as _time
+            # A SHA-256 hex digest is a plausible-looking value that won't cause 
+            # an outright parse error on EA's side. 
+            # Whether EA validates pc_sign cryptographically on their end 
+            # (and thus would reject any value that wasn't machine-signed) 
+            # is unknown from the source alone — but it's strictly better than sending an empty string, 
+            # which is a guaranteed rejection.
+            dummy = hashlib.sha256(str(_time.time()).encode()).hexdigest()
+            pc_sign = dummy
 
+        query = urlencode({
+            "response_type": "code",
+            "client_id": "JUNO_PC_CLIENT",
+            "display": "junoClient/login",
+            "redirect_uri": "qrc:///html/login_successful.html",
+            "locale": "en_US",
+            "pc_sign": pc_sign,
+        })
         params = {
             "window_title": "Login to EA Desktop",
             "window_width": 495 if IS_WINDOWS else 480,
             "window_height": 850 if IS_WINDOWS else 825,
-            "start_uri": (
-                "https://accounts.ea.com/connect/auth"
-                "?response_type=code&client_id=JUNO_PC_CLIENT&display=junoClient/login"
-                "&redirect_uri=qrc:///html/login_successful.html"
-                f"&locale=en_US&pc_sign={pc_sign}"
-            ),
+            "start_uri": f"https://accounts.ea.com/connect/auth?{query}",
             "end_uri_regex": "qrc:/html/login_successful.html.*"
         }
         return NextStep("web_session", params, js=LOGIN_JS)
@@ -846,9 +857,21 @@ class EAPlugin(Plugin):
                 logger.exception("Failed to decode persistent '%s' cache", key)
                 return {}
 
-        for key, decoder in {"offers": None, "game_time": game_time_decoder}.items():
-            decoded = safe_decode(self.persistent_cache.get(key), key, decoder)
-            self.persistent_cache[key] = json.dumps(decoded)
+        offers_decoded = safe_decode(self.persistent_cache.get("offers"), "offers", None)
+        game_time_decoded = safe_decode(self.persistent_cache.get("game_time"), "game_time", game_time_decoder)
+
+        self.persistent_cache["offers"] = json.dumps(offers_decoded)
+        self.persistent_cache["game_time"] = json.dumps(game_time_decoded)
+
+        if offers_decoded and isinstance(offers_decoded, dict):
+            for offer_id, offer_data in offers_decoded.items():
+                if isinstance(offer_data, dict):
+                    self._offer_id_cache[OfferId(offer_id)] = offer_data
+            logger.info("handshake_complete: loaded %d offers from persistent cache", len(offers_decoded))
+
+        if game_time_decoded and isinstance(game_time_decoded, dict):
+            self._game_time_cache.update(game_time_decoded)
+            logger.info("handshake_complete: loaded %d game_time entries from persistent cache", len(game_time_decoded))
 
         self._http_client.load_lats_from_cache(self.persistent_cache.get("lats"))
         self._http_client.set_save_lats_callback(self._save_lats)
