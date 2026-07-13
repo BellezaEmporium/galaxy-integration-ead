@@ -179,8 +179,8 @@ class EABackendClient:
                     logger.debug("Offer %s filtered out as DLC (displayType=%s gameType=%s)", offer_id, display_type, game_type)
                     continue
 
-                if not legacy_offer.get("displayName"):
-                    legacy_offer["displayName"] = (product.get("name") if product else None) or f"Unknown Game ({offer_id})"
+                if not legacy_offer.get("displayName") and product.get("name"):
+                    legacy_offer["displayName"] = product["name"]
 
                 if product and product.get("gameSlug"):
                     legacy_offer["gameSlug"] = product["gameSlug"]
@@ -188,7 +188,7 @@ class EABackendClient:
                 if product:
                     legacy_offer["game_product"] = product
 
-                result[product.get("originOfferId") or offer_id if product else offer_id] = legacy_offer
+                result[offer_id] = legacy_offer
 
             return result
         except Exception as e:
@@ -262,13 +262,15 @@ class EABackendClient:
         response = await self._http_client.get(_FRIENDS_URL)
 
         try:
-            return {
-                user_json["player"]["pd"]: (
-                    user_json["player"]["displayName"],
-                    user_json["player"]["avatar"]["large"]["path"],
-                )
-                for user_json in response["data"]["me"]["friends"]["items"]
-            }
+            friends: dict[str, tuple[str, str]] = {}
+            for item in response["data"]["me"]["friends"]["items"]:
+                player = item.get("player") or {}
+                user_id = player.get("pd")
+                if not user_id:
+                    continue
+                avatar_url = ((player.get("avatar") or {}).get("large") or {}).get("path") or ""
+                friends[str(user_id)] = (player.get("displayName") or str(user_id), avatar_url)
+            return friends
         except (AttributeError, KeyError):
             logger.exception("Can not parse backend response: %s", response)
             raise UnknownBackendResponse()
@@ -297,9 +299,13 @@ class EABackendClient:
 
     async def _get_active_subscription(self, sub_json: Json) -> Subscription | None:
         try:
-            if sub_json and sub_json["status"].startswith("ACTIVE"):
+            if sub_json and str(sub_json.get("status") or "").startswith("ACTIVE"):
+                level = str(sub_json.get("level") or "").strip().lower()
+                if level not in {"standard", "premium"}:
+                    logger.warning("Unknown EA subscription level: %r", sub_json.get("level"))
+                    return None
                 return Subscription(
-                    subscription_name=sub_json["level"].lower(),
+                    subscription_name=level,
                     end_time=_parse_ea_timestamp(sub_json["end"]),
                 )
             logger.debug("Subscription status is not 'ACTIVE': %s", sub_json)
@@ -391,10 +397,14 @@ class EABackendClient:
                         if game_product.get("trialDetails"):
                             continue
                         if self._match_subscription_tier(game_product, tier):
+                            offer_id = game_product.get("originOfferId")
+                            if not offer_id:
+                                logger.warning("Skipping subscription product without originOfferId: %r", game_product)
+                                continue
                             subscription_games.append(
                                 SubscriptionGame(
-                                    game_title=game_product.get("name"),
-                                    game_id=(game_product.get("originOfferId") or "") + "@subscription",
+                                    game_title=game_product.get("name") or offer_id,
+                                    game_id=offer_id + "@subscription",
                                 )
                             )
 

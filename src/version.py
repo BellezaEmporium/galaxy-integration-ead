@@ -1,7 +1,15 @@
-__version__ = "0.50.0"
+__version__ = "0.51.0"
 __branch__ = "galaxy-2.1"
 __changelog__ = {
     "unreleased":"""""",
+    "0.51.0":"""
+        - conform ourselves to new Galaxy 2.1 API regarding subscription games list
+        - strengthen the login process to prevent token expiration
+        - simplify pc_sign generation, improve data gathering [thx Maxima project]
+        - review code_verifier logic according to oauth2 spec
+        - prevent the authentification system from hanging up if no pcsign is found
+        - fix user presence parsing
+    """,
     "0.50.0":"""
         - added full support for Galaxy 2.1
         - bumped code to Python 3.13

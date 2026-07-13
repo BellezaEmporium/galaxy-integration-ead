@@ -1,9 +1,12 @@
 import asyncio
+import base64
+import hashlib
 import itertools
 import json
 import pathlib
 import platform
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -15,7 +18,7 @@ from typing import Any, AsyncGenerator, NamedTuple, NewType, cast
 
 
 from urllib.parse import urlparse, parse_qs, urlencode
-from rtm_client import RtmClient
+from presence_manager import PresenceManager
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -56,14 +59,14 @@ LOGIN_JS = {
 MultiplayerId = NewType("MultiplayerId", str)
 GameId = NewType("GameId", str)
 
-class _AsyncListIterator:
+class _AsyncSubscriptionBatchIterator:
     def __init__(self, items):
-        self._items = iter(items)
+        self._items = iter([items])
 
-    def __aiter__(self) -> AsyncIterator[SubscriptionGame]:
+    def __aiter__(self) -> AsyncIterator[list[SubscriptionGame]]:
         return self
 
-    async def __anext__(self) -> SubscriptionGame:
+    async def __anext__(self) -> list[SubscriptionGame]:
         try:
             return next(self._items)
         except StopIteration:
@@ -85,6 +88,7 @@ class AuthenticationManager:
         self.backend_client = backend_client
         self._user_id: str | None = None
         self._persona_id: str | None = None
+        self._code_verifier: str | None = None
 
     @property
     def user_id(self) -> str | None:
@@ -102,19 +106,15 @@ class AuthenticationManager:
             raise AuthenticationRequired("User not authenticated")
 
     async def begin_auth_flow(self) -> NextStep:
+        self._code_verifier = secrets.token_urlsafe(64)
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(self._code_verifier.encode("ascii")).digest()
+        ).rstrip(b"=").decode("ascii")
         try:
             pc_sign = generate_pc_sign_fast()
         except Exception as e:
-            logger.error("Failed to generate PC sign fast, using dummy: %s", e)
-            import hashlib, time as _time
-            # A SHA-256 hex digest is a plausible-looking value that won't cause 
-            # an outright parse error on EA's side. 
-            # Whether EA validates pc_sign cryptographically on their end 
-            # (and thus would reject any value that wasn't machine-signed) 
-            # is unknown from the source alone — but it's strictly better than sending an empty string, 
-            # which is a guaranteed rejection.
-            dummy = hashlib.sha256(str(_time.time()).encode()).hexdigest()
-            pc_sign = dummy
+            logger.exception("Failed to generate PC sign")
+            raise AuthenticationRequired("Failed to generate the PC signature required for EA login") from e
 
         query = urlencode({
             "response_type": "code",
@@ -123,6 +123,8 @@ class AuthenticationManager:
             "redirect_uri": "qrc:///html/login_successful.html",
             "locale": "en_US",
             "pc_sign": pc_sign,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         })
         params = {
             "window_title": "Login to EA Desktop",
@@ -136,7 +138,11 @@ class AuthenticationManager:
     async def authenticate_with_code(self, code: str) -> tuple[str, str, str]:
         if not code:
             raise AuthenticationRequired("No authorization code provided")
-        await self.http_client._exchange_auth_code_for_token(code)
+        if not self._code_verifier:
+            raise AuthenticationRequired("No PKCE verifier available for authorization code")
+        code_verifier = self._code_verifier
+        self._code_verifier = None
+        await self.http_client._exchange_auth_code_for_token(code, code_verifier)
         return await self.get_identity()
 
     async def get_identity(self) -> tuple[str, str, str]:
@@ -157,15 +163,15 @@ class AuthenticationManager:
 class CacheManager:
     def __init__(self, plugin_instance):
         self.plugin = plugin_instance
-        self._game_time_cache: dict[OfferId, GameTime] = {}
+        self._game_time_cache: dict[GameId, GameTime] = {}
         self._offer_id_cache: dict[OfferId, Json] = {}
 
     @property
-    def game_time_cache(self) -> dict[OfferId, GameTime]:
+    def game_time_cache(self) -> dict[GameId, GameTime]:
         return self._game_time_cache
 
     @game_time_cache.setter
-    def game_time_cache(self, value: dict[OfferId, GameTime]):
+    def game_time_cache(self, value: dict[GameId, GameTime]):
         self._game_time_cache = value
 
     @property
@@ -215,9 +221,9 @@ class EAPlugin(Plugin):
         self._http_client.set_save_tokens_callback(self._store_tokens)
 
         self._backend_client = EABackendClient(self._http_client)
-        self._presence_manager = RtmClient(
-            access_token_provider=lambda: getattr(self._http_client, "_access_token", None),
-            on_presence_update=cast(Callable[[str, dict[Any, Any]], None], self.update_user_presence),
+        self._presence_manager = PresenceManager(
+            self._http_client,
+            self.update_user_presence,
         )
 
         self._auth_manager = AuthenticationManager(self._http_client, self._backend_client)
@@ -227,6 +233,7 @@ class EAPlugin(Plugin):
         self._persistent_cache_updated = False
         self._last_offers_prefetch = 0
         self._prefetch_task: asyncio.Task | None = None
+        self._background_services_task: asyncio.Task[None] | None = None
 
     def _schedule_offers_prefetch(self):
         if self._prefetch_task is None or self._prefetch_task.done():
@@ -253,11 +260,11 @@ class EAPlugin(Plugin):
             logger.debug("Background offers prefetch failed: %s", e)
 
     @property
-    def _game_time_cache(self) -> dict[OfferId, GameTime]:
+    def _game_time_cache(self) -> dict[GameId, GameTime]:
         return self._cache_manager.game_time_cache
 
     @_game_time_cache.setter
-    def _game_time_cache(self, value: dict[OfferId, GameTime]):
+    def _game_time_cache(self, value: dict[GameId, GameTime]):
         self._cache_manager.game_time_cache = value
 
     @property
@@ -272,6 +279,13 @@ class EAPlugin(Plugin):
         self._auth_manager.check_authenticated()
 
     async def shutdown(self):
+        if self._background_services_task:
+            self._background_services_task.cancel()
+            try:
+                await self._background_services_task
+            except asyncio.CancelledError:
+                pass
+            self._background_services_task = None
         if self._presence_manager:
             await self._presence_manager.stop()
         await self._http_client.close()
@@ -294,6 +308,8 @@ class EAPlugin(Plugin):
             self._http_client._access_token = access_token
         if refresh_token:
             self._http_client._refresh_token = refresh_token
+        if access_token:
+            self._http_client._access_token_expires_at = self._http_client._parse_jwt_exp(access_token)
 
         if access_token and self._http_client.is_access_token_valid():
             try:
@@ -302,7 +318,7 @@ class EAPlugin(Plugin):
                 self._schedule_background_services()
                 return Authentication(user_id, user_name)
             except Exception as e:
-                logger.info("Stored access token invalid, trying refresh: %s", e)
+                logger.exception("Stored-token identity failed; trying refresh: %s", e)
 
         if refresh_token:
             try:
@@ -312,7 +328,7 @@ class EAPlugin(Plugin):
                 self._schedule_background_services()
                 return Authentication(user_id, user_name)
             except Exception as e:
-                logger.info("Refresh token failed, starting fresh auth: %s", e)
+                logger.exception("Refresh-token authentication failed; starting fresh auth: %s", e)
 
         logger.info("Starting new authentication flow")
         return await self._auth_manager.begin_auth_flow()
@@ -385,13 +401,16 @@ class EAPlugin(Plugin):
                 logger.exception("Failed to start presence manager")
 
     def _schedule_background_services(self):
+        if self._background_services_task is not None and not self._background_services_task.done():
+            logger.debug("Background services already scheduled, skipping duplicate")
+            return
         async def _delayed_start():
-            await asyncio.sleep(2)
             try:
+                await asyncio.sleep(2)
                 await self._start_background_services()
             except Exception:
                 logger.exception("Background services startup failed")
-        asyncio.create_task(_delayed_start())
+        self._background_services_task = asyncio.create_task(_delayed_start())
 
     @staticmethod
     def _offer_id_from_game_id(game_id: GameId) -> OfferId:
@@ -435,9 +454,8 @@ class EAPlugin(Plugin):
             for key, offer in batch.items():
                 if not isinstance(offer, dict):
                     continue
-                oid = OfferId(offer.get("offerId") or offer.get("originOfferId") or key)
-                offers[oid] = offer
-                self._offer_id_cache[oid] = offer
+                offers[key] = offer
+                self._offer_id_cache[key] = offer
 
         return offers
 
@@ -455,40 +473,49 @@ class EAPlugin(Plugin):
         entitlements = await self._backend_client.get_entitlements()
         logger.info("Fetched %d entitlements for user %s", len(entitlements), self._auth_manager.user_id)
 
-        entitlements.sort(key=lambda e: (e.get("product") or {}).get("gameSlug", ""))
+        entitlements.sort(key=lambda e: (e.get("product") or {}).get("gameSlug") or "")
 
         deduped: list[dict] = []
         no_slug: list[dict] = []
         for slug, group in itertools.groupby(entitlements, key=lambda e: (e.get("product") or {}).get("gameSlug")):
-            if slug is None:
+            if not slug:
                 no_slug.extend(group)
             else:
                 deduped.append(min(group, key=self._entitlement_key))
 
-        logger.info("Deduplicated %d entitlements to %d unique games", len(entitlements), len(deduped) + len(no_slug))
+        seen_no_slug_ids: set[str] = set()
+        for entitlement in no_slug:
+            offer_id = entitlement.get("id")
+            if offer_id and offer_id in seen_no_slug_ids:
+                continue
+            if offer_id:
+                seen_no_slug_ids.add(offer_id)
+            deduped.append(entitlement)
 
-        offer_ids = [OfferId(e["id"]) for e in itertools.chain(deduped, no_slug) if e.get("id")]
+        logger.info("Deduplicated %d entitlements to %d unique games", len(entitlements), len(deduped))
+
+        offer_ids = [OfferId(e["id"]) for e in deduped if e.get("id")]
         offers = await self._get_offers(offer_ids)
         logger.info("_get_offers returned %d offers for %d offer IDs", len(offers), len(offer_ids))
 
         games: list[Game] = []
-        if offers:
-            for origin_offer_id, offer in offers.items():
-                if not isinstance(offer, dict):
-                    continue
-                display_name = offer.get("displayName") or (offer.get("game_product") or {}).get("name")
-                raw_offer_id = offer.get("offerId") or str(origin_offer_id)
-                if display_name and raw_offer_id:
-                    games.append(Game(GameId(raw_offer_id), display_name, None, LicenseInfo(LicenseType.SinglePurchase, None)))
-        else:
-            logger.warning("get_offers returned empty — falling back to entitlement data")
-            for e in itertools.chain(deduped, no_slug):
-                if not (offer_id := e.get("id")):
-                    continue
-                if not (display_name := (e.get("product") or {}).get("name")):
-                    continue
-                games.append(Game(GameId(offer_id), display_name, None, LicenseInfo(LicenseType.SinglePurchase, None)))
-                product = e.get("product") or {}
+        for entitlement in deduped:
+            offer_id = entitlement.get("id")
+            product = entitlement.get("product") or {}
+            if not offer_id:
+                continue
+            offer = offers.get(OfferId(offer_id)) or {}
+            display_name = (
+                offer.get("displayName")
+                or (offer.get("game_product") or {}).get("name")
+                or product.get("name")
+            )
+            if not display_name:
+                logger.warning("Skipping offer %s because EA returned no display name", offer_id)
+                continue
+            games.append(Game(GameId(offer_id), display_name, None, LicenseInfo(LicenseType.SinglePurchase, None)))
+
+            if OfferId(offer_id) not in self._offer_id_cache:
                 self._offer_id_cache[OfferId(offer_id)] = {
                     "offerId": offer_id,
                     "displayName": display_name,
@@ -576,20 +603,37 @@ class EAPlugin(Plugin):
         self._check_authenticated()
         return await self._backend_client.get_user_subscriptions()
 
-    async def prepare_subscription_games_context(self, subscription_names: list[str]) -> dict[str, str]:
+    async def prepare_subscription_games_context(
+        self, subscription_names: list[str]
+    ) -> dict[str, list[SubscriptionGame]]:
         self._check_authenticated()
-        return {"EA Play": "standard", "EA Play Pro": "premium"}
+        tier_by_subscription = {
+            "EA Play": "standard",
+            "EA Play Pro": "premium",
+        }
+        requested_subscriptions = [
+            subscription_name
+            for subscription_name in subscription_names
+            if subscription_name in tier_by_subscription
+        ]
+        games_by_subscription = await asyncio.gather(
+            *(
+                self._backend_client.get_subscription_games_for_tier(
+                    tier_by_subscription[subscription_name]
+                )
+                for subscription_name in requested_subscriptions
+            )
+        )
+        return dict(zip(requested_subscriptions, games_by_subscription))
 
     async def get_subscription_games(
-        self, subscription_name: str, context: dict[str, str]
+        self, subscription_name: str, context: dict[str, list[SubscriptionGame]]
     ):
         try:
-            tier = context[subscription_name]
+            games = context[subscription_name]
         except KeyError:
             raise UnknownError(f"Unknown subscription name {subscription_name}!")
-
-        games = await self._backend_client.get_subscription_games_for_tier(tier)
-        return _AsyncListIterator(games)
+        return _AsyncSubscriptionBatchIterator(games)
 
     async def _get_game_times_for_master_title(
         self, game_id: GameId, game_slug: GameSlug, lastplayed_time: Timestamp | None
@@ -597,8 +641,7 @@ class EAPlugin(Plugin):
         def get_cached(_game_id: GameId, _lastplayed_time: Timestamp | None) -> GameTime | None:
             if _lastplayed_time is None:
                 return None
-            offer_id = self._offer_id_from_game_id(_game_id)
-            cached = self._game_time_cache.get(offer_id)
+            cached = self._game_time_cache.get(_game_id)
             if cached is None or cached.last_played_time is None:
                 return None
             return cached if _lastplayed_time <= cached.last_played_time else None
@@ -608,7 +651,7 @@ class EAPlugin(Plugin):
 
         total_play_time, last_played_time = await self._backend_client.get_game_time(game_slug)
         game_time = GameTime(game_id, total_play_time, last_played_time)
-        self._game_time_cache[self._offer_id_from_game_id(game_id)] = game_time
+        self._game_time_cache[game_id] = game_time
         self._persistent_cache_updated = True
         return game_time
 
@@ -669,10 +712,18 @@ class EAPlugin(Plugin):
     async def get_friends(self) -> list[UserInfo]:
         self._check_authenticated()
         friends = await self._backend_client.get_friends()
+        self._presence_manager.set_friends(list(friends))
         return [
             UserInfo(user_id=str(uid), user_name=str(uname), avatar_url=str(url))
             for uid, (uname, url) in friends.items()
         ]
+
+    async def prepare_user_presence_context(self, user_id_list: list[str]) -> None:
+        self._check_authenticated()
+        return None
+
+    async def get_user_presence(self, user_id: str, context: None) -> UserPresence:
+        return self._presence_manager.get_friend_presence(user_id) or UserPresence(PresenceState.Unknown)
 
     def _open_uri(self, uri: str):
         logger.info("Opening %s", uri)
@@ -837,15 +888,21 @@ class EAPlugin(Plugin):
             return None
 
     def handshake_complete(self):
-        def game_time_decoder(cache: dict) -> dict[OfferId, GameTime]:
-            for key in list(cache):
-                if "@" in key:
-                    del cache[key]
-            return {
-                game_id: GameTime(entry["game_id"], entry["time_played"], entry.get("last_played_time"))
-                for game_id, entry in cache.items()
-                if entry and game_id
-            }
+        def game_time_decoder(cache: dict) -> dict[GameId, GameTime]:
+            decoded: dict[GameId, GameTime] = {}
+            for old_key, entry in cache.items():
+                if not isinstance(entry, dict):
+                    continue
+                game_id = entry.get("game_id") or old_key
+                if not game_id or "time_played" not in entry:
+                    continue
+                normalized_game_id = GameId(game_id)
+                decoded[normalized_game_id] = GameTime(
+                    normalized_game_id,
+                    entry["time_played"],
+                    entry.get("last_played_time"),
+                )
+            return decoded
 
         def safe_decode(cache, key: str, decoder: Callable | None):
             if not cache:

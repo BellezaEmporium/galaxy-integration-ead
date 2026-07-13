@@ -3,7 +3,6 @@ import json
 import logging
 import time
 import asyncio
-import random
 import re
 
 import aiohttp
@@ -128,18 +127,13 @@ class AuthenticatedHttpClient(HttpClient):
             headers["Authorization"] = f"Bearer {self._access_token}"
         return headers
 
-    async def _exchange_auth_code_for_token(self, code: str):
+    async def _exchange_auth_code_for_token(self, code: str, code_verifier: str):
         async with self._token_lock:
             params = {
                 "token_format":  "JWS",
                 "client_id":     self._client_id,
                 "client_secret": self._client_secret,
-                "code_verifier": base64.b64encode(
-                    ''.join(random.choices(
-                        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-                        k=32,
-                    )).encode()
-                ).decode().strip('='),
+                "code_verifier": code_verifier,
                 "grant_type":   "authorization_code",
                 "redirect_uri": "qrc:///html/login_successful.html",
                 "code":         code,

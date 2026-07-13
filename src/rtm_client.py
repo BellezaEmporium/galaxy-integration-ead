@@ -72,7 +72,9 @@ class RtmClient:
 
     def set_friends(self, nucleus_ids: list[str]) -> None:
         """Update the list of friend IDs to subscribe to."""
-        self._subscribed_ids = list(nucleus_ids)
+        self._subscribed_ids = list(dict.fromkeys(nucleus_ids))
+        if self._writer and self._running:
+            asyncio.create_task(self._subscribe(self._subscribed_ids))
 
     # ------------------------------------------------------------------ #
     #  Connection loop                                                   #

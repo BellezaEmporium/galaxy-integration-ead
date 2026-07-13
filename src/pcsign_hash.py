@@ -45,43 +45,43 @@ except ImportError:
     _CPUINFO_AVAILABLE = False
 
 
-    _IS_64BIT: Final = struct.calcsize("P") == 8
+_IS_64BIT: Final = struct.calcsize("P") == 8
 
-    _CPUID_CODE_64: Final = bytes([
-        0x53, 0x57, 0x89, 0xC8, 0x48, 0x89, 0xD7, 0x31, 0xC9,
-        0x0F, 0xA2, 0x89, 0x07, 0x89, 0x5F, 0x04, 0x89, 0x4F,
-        0x08, 0x89, 0x57, 0x0C, 0x5F, 0x5B, 0xC3,
-    ])
-    _CPUID_CODE_32: Final = bytes([
-        0x53, 0x57, 0x8B, 0x44, 0x24, 0x0C, 0x31, 0xC9, 0x0F,
-        0xA2, 0x8B, 0x7C, 0x24, 0x10, 0x89, 0x07, 0x89, 0x5F,
-        0x04, 0x89, 0x4F, 0x08, 0x89, 0x57, 0x0C, 0x5F, 0x5B,
-        0xC3,
-    ])
+_CPUID_CODE_64: Final = bytes([
+    0x53, 0x57, 0x89, 0xC8, 0x48, 0x89, 0xD7, 0x31, 0xC9,
+    0x0F, 0xA2, 0x89, 0x07, 0x89, 0x5F, 0x04, 0x89, 0x4F,
+    0x08, 0x89, 0x57, 0x0C, 0x5F, 0x5B, 0xC3,
+])
+_CPUID_CODE_32: Final = bytes([
+    0x53, 0x57, 0x8B, 0x44, 0x24, 0x0C, 0x31, 0xC9, 0x0F,
+    0xA2, 0x8B, 0x7C, 0x24, 0x10, 0x89, 0x07, 0x89, 0x5F,
+    0x04, 0x89, 0x4F, 0x08, 0x89, 0x57, 0x0C, 0x5F, 0x5B,
+    0xC3,
+])
 
-    def _cpuid(leaf: int) -> tuple[int, int, int, int]:
-        if platform.system() != "Windows":
-            return 0, 0, 0, 0
-        kernel32 = ctypes.windll.kernel32
-        kernel32.VirtualAlloc.restype = ctypes.c_void_p
-        kernel32.VirtualAlloc.argtypes = [
-            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32
-        ]
-        kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+def _cpuid(leaf: int) -> tuple[int, int, int, int]:
+    if platform.system() != "Windows":
+        return 0, 0, 0, 0
+    kernel32 = ctypes.windll.kernel32
+    kernel32.VirtualAlloc.restype = ctypes.c_void_p
+    kernel32.VirtualAlloc.argtypes = [
+        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32
+    ]
+    kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
 
-        code = _CPUID_CODE_64 if _IS_64BIT else _CPUID_CODE_32
-        addr = kernel32.VirtualAlloc(None, len(code), 0x3000, 0x40)
-        if not addr:
-            raise OSError("VirtualAlloc failed")
-        try:
-            ctypes.memmove(addr, code, len(code))
-            result = (ctypes.c_uint32 * 4)()
-            func = ctypes.CFUNCTYPE(None, ctypes.c_uint32,
-                                    ctypes.POINTER(ctypes.c_uint32 * 4))(addr)
-            func(leaf, result)
-            return tuple(result)  # type: ignore[return-value]
-        finally:
-            kernel32.VirtualFree(addr, 0, 0x8000)
+    code = _CPUID_CODE_64 if _IS_64BIT else _CPUID_CODE_32
+    addr = kernel32.VirtualAlloc(None, len(code), 0x3000, 0x40)
+    if not addr:
+        raise OSError("VirtualAlloc failed")
+    try:
+        ctypes.memmove(addr, code, len(code))
+        result = (ctypes.c_uint32 * 4)()
+        func = ctypes.CFUNCTYPE(None, ctypes.c_uint32,
+                                ctypes.POINTER(ctypes.c_uint32 * 4))(addr)
+        func(leaf, result)
+        return tuple(result)  # type: ignore[return-value]
+    finally:
+        kernel32.VirtualFree(addr, 0, 0x8000)
 
 
 @dataclass(frozen=True, slots=True)
